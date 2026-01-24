@@ -26,7 +26,12 @@ class AudioEngine: ObservableObject {
     @Published var fileName: String?
     @Published var processingStatus: String = ""
     @Published var processingProgress: Double = 0
-    @Published var currentDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    @Published var currentDirectory: URL = FileManager.default.homeDirectoryForCurrentUser {
+        didSet {
+            // Persist the last used directory
+            UserDefaults.standard.set(currentDirectory.path, forKey: "lastDirectory")
+        }
+    }
     @Published var showFileBrowser: Bool = true
     @Published var playbackRate: Float = 1.0
     @Published var waveformSamples: [Float] = []
@@ -75,6 +80,14 @@ class AudioEngine: ObservableObject {
     
     // MARK: - Initialization
     init() {
+        // Restore last used directory if available
+        if let savedPath = UserDefaults.standard.string(forKey: "lastDirectory") {
+            let savedURL = URL(fileURLWithPath: savedPath)
+            if FileManager.default.fileExists(atPath: savedPath) {
+                currentDirectory = savedURL
+            }
+        }
+        
         setupAudioEngine()
     }
     
