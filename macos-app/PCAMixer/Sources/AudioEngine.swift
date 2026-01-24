@@ -49,6 +49,9 @@ class AudioEngine: ObservableObject {
     @Published var muteStates: [Bool] = []
     @Published var meterLevels: [Float] = []
     
+    // Original audio meter level (for pre-analysis playback)
+    @Published var originalMeterLevel: Float = 0
+    
     // For PCA mode - variance info
     @Published var varianceRatios: [Double] = []
     
@@ -66,6 +69,7 @@ class AudioEngine: ObservableObject {
     private var tempDirectory: URL?
     private var currentInputURL: URL?
     private var peakLevels: [Float] = []  // Raw peak levels from taps
+    private var originalPeakLevel: Float = 0  // Raw peak level for original audio
     private let meterDecay: Float = 0.85  // How fast meters fall
     private let waveformMaxSamples: Int = 1000
     
@@ -202,6 +206,16 @@ class AudioEngine: ObservableObject {
         
         engine.connect(player, to: meterMixer, format: buffer.format)
         engine.connect(meterMixer, to: mixer, format: buffer.format)
+        
+        // Install tap for metering original audio
+        let tapFormat = meterMixer.outputFormat(forBus: 0)
+        if tapFormat.sampleRate > 0 {
+            meterMixer.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { [weak self] tapBuffer, _ in
+                guard let self = self else { return }
+                let level = self.calculateRMS(buffer: tapBuffer)
+                self.originalPeakLevel = max(level, self.originalPeakLevel * self.meterDecay)
+            }
+        }
         
         originalPlayerNode = player
         originalMeterNode = meterMixer
@@ -986,6 +1000,8 @@ class AudioEngine: ObservableObject {
             for player in playerNodes { player.stop() }
         } else {
             originalPlayerNode?.stop()
+            originalPeakLevel = 0
+            originalMeterLevel = 0
         }
         
         isPlaying = false
@@ -1097,12 +1113,18 @@ class AudioEngine: ObservableObject {
         currentTime = min(time, duration)
         
         // Update meters from real audio levels
-        for i in 0..<meterLevels.count {
-            if i < peakLevels.count {
-                meterLevels[i] = peakLevels[i]
-            } else {
-                meterLevels[i] = 0
+        if hasSession {
+            // Analyzed mode: update per-stem meters
+            for i in 0..<meterLevels.count {
+                if i < peakLevels.count {
+                    meterLevels[i] = peakLevels[i]
+                } else {
+                    meterLevels[i] = 0
+                }
             }
+        } else {
+            // Pre-analysis mode: update original meter level
+            originalMeterLevel = originalPeakLevel
         }
         
         if selectionEnd > selectionStart {

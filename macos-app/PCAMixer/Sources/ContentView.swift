@@ -505,7 +505,81 @@ struct TransportView: View {
             
             // LCD Time Display
             LCDDisplay(time: audioEngine.currentTime, duration: audioEngine.duration)
+            
+            // Master level meter
+            ToolbarMeterView(level: masterLevel)
         }
+    }
+    
+    var masterLevel: Float {
+        if audioEngine.hasSession {
+            // Analyzed mode: sum of stem levels
+            guard !audioEngine.meterLevels.isEmpty else { return 0 }
+            let sum = audioEngine.meterLevels.reduce(0, +)
+            return min(1.0, sum / Float(audioEngine.meterLevels.count) * 1.5)
+        } else {
+            // Pre-analysis mode: original audio level
+            return audioEngine.originalMeterLevel
+        }
+    }
+}
+
+// MARK: - Toolbar Meter (vertical level meter for toolbar)
+struct ToolbarMeterView: View {
+    let level: Float
+    
+    var body: some View {
+        HStack(spacing: 3) {
+            // Left channel
+            GeometryReader { geometry in
+                ZStack(alignment: .bottom) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(hex: "111111"))
+                    
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(meterGradient)
+                        .frame(height: geometry.size.height * CGFloat(level))
+                }
+            }
+            .frame(width: 6, height: 28)
+            
+            // Right channel
+            GeometryReader { geometry in
+                ZStack(alignment: .bottom) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(hex: "111111"))
+                    
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(meterGradient)
+                        .frame(height: geometry.size.height * CGFloat(level))
+                }
+            }
+            .frame(width: 6, height: 28)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color(hex: "0a0a0a"))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color(hex: "333333"), lineWidth: 1)
+                )
+        )
+    }
+    
+    var meterGradient: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(hex: "30d158"),
+                Color(hex: "30d158"),
+                Color(hex: "ffcc00"),
+                Color(hex: "ff9500"),
+                Color(hex: "ff3b30")
+            ],
+            startPoint: .bottom,
+            endPoint: .top
+        )
     }
 }
 
@@ -994,17 +1068,17 @@ struct MixerView: View {
             // Timeline
             TimelineView()
             
-            // Channel strips
-            ScrollView(.horizontal, showsIndicators: true) {
-                HStack(spacing: 0) {
+            // Channel strips - centered with spacing
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
                     ForEach(0..<audioEngine.componentCount, id: \.self) { index in
                         ChannelStripView(index: index)
                     }
-                    
-                    // Master channel
-                    MasterChannelView()
                 }
+                .padding(.horizontal, 20)
+                .frame(minWidth: 0, maxWidth: .infinity)
             }
+            .frame(maxWidth: .infinity)
             .background(Color(hex: "1e1e1e"))
         }
     }
@@ -1145,7 +1219,7 @@ struct ChannelStripView: View {
     var stemIcon: String {
         switch stemName.lowercased() {
         case "drums":
-            return "drum"
+            return "oval.fill"
         case "bass":
             return "guitars"
         case "vocals":
@@ -1239,17 +1313,14 @@ struct ChannelStripView: View {
         }
         .frame(width: 80)
         .background(
-            LinearGradient(
-                colors: [Color(hex: "2a2a2a"), Color(hex: "222222")],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
-        .overlay(
-            Rectangle()
-                .frame(width: 1)
-                .foregroundColor(Color(hex: "111111")),
-            alignment: .trailing
+            RoundedRectangle(cornerRadius: 8)
+                .fill(
+                    LinearGradient(
+                        colors: [Color(hex: "2a2a2a"), Color(hex: "222222")],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
         )
     }
     
