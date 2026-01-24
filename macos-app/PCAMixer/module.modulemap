@@ -1,0 +1,5 @@
+module MusicToolLib {
+    header "Sources/music_tool.h"
+    link "music_tool"
+    export *
+}
