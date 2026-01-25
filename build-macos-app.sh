@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Build script for PCA Mixer macOS app
+# Build script for Remix macOS app
 # This script compiles the Rust library and builds the Swift macOS app
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,12 +96,12 @@ echo ""
 echo "Step 3: Compiling Swift application..."
 
 SWIFT_SOURCES=(
-    "macos-app/PCAMixer/Sources/PCAMixerApp.swift"
-    "macos-app/PCAMixer/Sources/AudioEngine.swift"
-    "macos-app/PCAMixer/Sources/ContentView.swift"
+    "macos-app/Remix/Sources/RemixApp.swift"
+    "macos-app/Remix/Sources/AudioEngine.swift"
+    "macos-app/Remix/Sources/ContentView.swift"
 )
 
-HEADER_PATH="$SCRIPT_DIR/macos-app/PCAMixer/Sources/music_tool.h"
+HEADER_PATH="$SCRIPT_DIR/macos-app/Remix/Sources/music_tool.h"
 LIB_PATH="$SCRIPT_DIR/target/release"
 
 # Remove the dylib temporarily to force static linking

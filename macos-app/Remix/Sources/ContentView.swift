@@ -421,6 +421,24 @@ struct ToolbarView: View {
             
             // Right section - Actions
             HStack(spacing: 12) {
+                // Cache indicator (show when session is loaded from cache)
+                if audioEngine.hasSession && audioEngine.loadedFromCache {
+                    HStack(spacing: 4) {
+                        Image(systemName: "archivebox.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color(hex: "30d158"))
+                        Text("Cached")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(Color(hex: "30d158"))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color(hex: "30d158").opacity(0.15))
+                    )
+                }
+                
                 // Playback speed (show when file is loaded or analyzed)
                 if audioEngine.hasLoadedFile || audioEngine.hasSession {
                     HStack(spacing: 4) {
@@ -444,6 +462,15 @@ struct ToolbarView: View {
                     }
                 }
                 
+                // Re-analyze button (only when loaded from cache)
+                if audioEngine.hasSession && audioEngine.loadedFromCache {
+                    Button(action: { audioEngine.reanalyze() }) {
+                        Label("Re-analyze", systemImage: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(SecondaryToolbarButtonStyle())
+                }
+                
                 // Bounce only available after analysis
                 if audioEngine.hasSession {
                     Button(action: { audioEngine.bounceToFile() }) {
@@ -453,7 +480,7 @@ struct ToolbarView: View {
                     .buttonStyle(ToolbarButtonStyle())
                 }
             }
-            .frame(width: 220, alignment: .trailing)
+            .frame(minWidth: 220, alignment: .trailing)
             .padding(.trailing, 16)
         }
         .frame(height: 48)
@@ -843,6 +870,40 @@ struct PreAnalysisView: View {
                         }
                     }
                 } else {
+                    // Cache available banner
+                    if audioEngine.hasCachedAnalysis {
+                        HStack(spacing: 8) {
+                            Image(systemName: "archivebox.fill")
+                                .foregroundColor(Color(hex: "30d158"))
+                            Text("Previous analysis found")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.white)
+                            
+                            Button(action: { audioEngine.loadFromCache() }) {
+                                Text("Load")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 5)
+                                            .fill(Color(hex: "30d158"))
+                                    )
+                                    .foregroundColor(.black)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(hex: "30d158").opacity(0.15))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color(hex: "30d158").opacity(0.3), lineWidth: 1)
+                                )
+                        )
+                    }
+                    
                     // Mode selector
                     VStack(spacing: 16) {
                         HStack(spacing: 12) {
@@ -897,7 +958,7 @@ struct PreAnalysisView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "waveform.badge.magnifyingglass")
                                 .font(.system(size: 16))
-                            Text("Analyze")
+                            Text(audioEngine.hasCachedAnalysis ? "Re-analyze" : "Analyze")
                                 .font(.system(size: 15, weight: .semibold))
                         }
                         .padding(.horizontal, 32)
@@ -1518,6 +1579,31 @@ struct ToolbarButtonStyle: ButtonStyle {
                     )
             )
             .foregroundColor(.white)
+    }
+}
+
+struct SecondaryToolbarButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(
+                        LinearGradient(
+                            colors: configuration.isPressed ?
+                                [Color(hex: "3a3a3a"), Color(hex: "2a2a2a")] :
+                                [Color(hex: "4a4a4a"), Color(hex: "3a3a3a")],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color(hex: "555555"), lineWidth: 1)
+                    )
+            )
+            .foregroundColor(Color(hex: "cccccc"))
     }
 }
 

@@ -2,16 +2,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "PCAMixer",
+    name: "Remix",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "PCAMixer", targets: ["PCAMixer"])
+        .executable(name: "Remix", targets: ["Remix"])
     ],
     targets: [
         .executableTarget(
-            name: "PCAMixer",
+            name: "Remix",
             dependencies: ["MusicToolLib"],
             path: "Sources",
             exclude: ["music_tool.h"],

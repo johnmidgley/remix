@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct PCAMixerApp: App {
+struct RemixApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var audioEngine = AudioEngine()
     
