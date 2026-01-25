@@ -8,7 +8,7 @@
 # App bundles (built output)
 *.app/
 
-# Python
+# Python (legacy, no longer used)
 __pycache__/
 *.py[cod]
 *$py.class
@@ -48,7 +48,8 @@ Package.resolved
 # Generated files
 *.icns
 
-# Downloaded models (generated during build with --with-models)
-/models/
+# Downloaded/converted models
+*.onnx
+/models/*.onnx
 
 *.mp3

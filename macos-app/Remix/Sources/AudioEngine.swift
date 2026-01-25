@@ -261,6 +261,10 @@ class AudioEngine: ObservableObject {
     static let demucsStems = ["drums", "bass", "vocals", "guitar", "piano", "other"]
     static let demucsDisplayNames = ["Drums", "Bass", "Vocals", "Guitar", "Keys", "Other"]
     
+    // Demucs model handle (loaded once on first use)
+    private var demucsModel: OpaquePointer?
+    private var modelLoadError: String?
+    
     // MARK: - Initialization
     init() {
         // Restore last used directory if available
@@ -276,6 +280,11 @@ class AudioEngine: ObservableObject {
     
     deinit {
         cleanup()
+        // Free Demucs model
+        if let model = demucsModel {
+            demucs_free_model(model)
+            demucsModel = nil
+        }
     }
     
     // MARK: - Audio Engine Setup
@@ -574,9 +583,74 @@ class AudioEngine: ObservableObject {
     }
     
     // MARK: - Demucs Processing
+    
+    /// Find the ONNX model path in the app bundle or development location
+    private func findModelPath() -> String? {
+        // Check in app bundle Resources
+        if let bundlePath = Bundle.main.path(forResource: "htdemucs_6s", ofType: "onnx") {
+            return bundlePath
+        }
+        
+        // Check in Resources/models/
+        if let resourcePath = Bundle.main.resourcePath {
+            let modelsPath = (resourcePath as NSString).appendingPathComponent("models/htdemucs_6s.onnx")
+            if FileManager.default.fileExists(atPath: modelsPath) {
+                return modelsPath
+            }
+        }
+        
+        // Check in development location
+        let devPath = URL(fileURLWithPath: #file)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("models/htdemucs_6s.onnx")
+        if FileManager.default.fileExists(atPath: devPath.path) {
+            return devPath.path
+        }
+        
+        return nil
+    }
+    
+    /// Load the Demucs model (lazy loading on first use)
+    private func loadDemucsModel() -> Bool {
+        // Already loaded?
+        if demucsModel != nil {
+            return true
+        }
+        
+        // Already failed?
+        if modelLoadError != nil {
+            return false
+        }
+        
+        // Find model path
+        guard let modelPath = findModelPath() else {
+            modelLoadError = "Demucs ONNX model not found. Please ensure htdemucs_6s.onnx is in the app bundle."
+            return false
+        }
+        
+        // Load model
+        demucsModel = demucs_load_model(modelPath)
+        
+        if demucsModel == nil {
+            modelLoadError = "Failed to load Demucs model from: \(modelPath)"
+            return false
+        }
+        
+        return true
+    }
+    
     private func processWithDemucs(url: URL) {
-        updateStatus("Checking Demucs installation...")
+        updateStatus("Loading Demucs model...")
         updateProgress(0)
+        
+        // Load model if not already loaded
+        if !loadDemucsModel() {
+            handleError(modelLoadError ?? "Failed to load Demucs model")
+            return
+        }
         
         // Create temp directory for output
         let tempDir = FileManager.default.temporaryDirectory
@@ -590,49 +664,9 @@ class AudioEngine: ObservableObject {
             return
         }
         
-        // Find Python
-        let pythonPaths = ["/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"]
-        var pythonPath: String?
-        for path in pythonPaths {
-            if FileManager.default.fileExists(atPath: path) {
-                pythonPath = path
-                break
-            }
-        }
-        
-        guard let python = pythonPath else {
-            handleError("Python 3 not found. Please install Python 3.")
-            return
-        }
-        
-        // Get script path (in app bundle or development location)
-        var scriptPath: String?
-        
-        // Check in app bundle Resources
-        if let bundlePath = Bundle.main.path(forResource: "demucs_separate", ofType: "py") {
-            scriptPath = bundlePath
-        }
-        
-        // Check in development location
-        if scriptPath == nil {
-            let devPath = URL(fileURLWithPath: #file)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("scripts/demucs_separate.py")
-            if FileManager.default.fileExists(atPath: devPath.path) {
-                scriptPath = devPath.path
-            }
-        }
-        
-        guard let script = scriptPath else {
-            handleError("Demucs script not found")
-            return
-        }
-        
-        // Convert input to WAV using our Rust library (avoids FFmpeg dependency)
-        updateStatus("Converting audio to WAV...")
+        // Convert input to WAV if needed using our Rust library
+        updateStatus("Preparing audio...")
+        updateProgress(0.05)
         
         let inputPath: String
         let fileExtension = url.pathExtension.lowercased()
@@ -678,101 +712,65 @@ class AudioEngine: ObservableObject {
             }
         }
         
-        updateStatus("Running Demucs (this may take a few minutes)...")
-        updateProgress(0)
+        updateStatus("Running Demucs separation (this may take a few minutes)...")
+        updateProgress(0.1)
         
-        // Run demucs
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: python)
-        process.arguments = [
-            script,
-            inputPath,
-            "-o", tempDir.path,
-            "-m", "htdemucs_6s",
-            "--install",
-            "--json"
-        ]
+        // Run Demucs separation via Rust FFI
+        let result = demucs_separate(demucsModel, inputPath, tempDir.path)
         
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-        
-        var stderrBuffer = ""
-        let stderrHandle = errorPipe.fileHandleForReading
-        stderrHandle.readabilityHandler = { [weak self] handle in
-            guard let self = self else { return }
-            let data = handle.availableData
-            if data.isEmpty { return }
-            if let chunk = String(data: data, encoding: .utf8) {
-                stderrBuffer.append(chunk)
-                let lines = stderrBuffer.components(separatedBy: "\n")
-                // Keep the last partial line in the buffer
-                stderrBuffer = lines.last ?? ""
-                
-                for line in lines.dropLast() {
-                    if let progress = self.parseDemucsProgress(line) {
-                        self.updateProgress(progress)
-                    }
-                }
-            }
-        }
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            stderrHandle.readabilityHandler = nil
-            handleError("Failed to run Demucs: \(error.localizedDescription)")
+        // Check for errors
+        if let errorPtr = result.error {
+            let errorMsg = String(cString: errorPtr)
+            demucs_free_result(result)
+            handleError("Demucs separation failed: \(errorMsg)")
             return
         }
         
-        stderrHandle.readabilityHandler = nil
-        
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
-        let stdOutput = String(data: outputData, encoding: .utf8) ?? ""
-        
-        if process.terminationStatus != 0 {
-            // Combine stdout and stderr for full error context
-            var fullError = "Demucs failed (exit \(process.terminationStatus)):\n"
-            if !errorOutput.isEmpty {
-                fullError += "\n--- stderr ---\n\(errorOutput)"
-            }
-            if !stdOutput.isEmpty {
-                fullError += "\n--- stdout ---\n\(stdOutput)"
-            }
-            handleError(fullError)
-            return
-        }
-        
-        updateProgress(1)
-        // Parse JSON output from stdout
-        guard let jsonData = stdOutput.data(using: .utf8),
-              let result = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let stems = result["stems"] as? [String: String] else {
-            handleError("Failed to parse Demucs output.\n\nstdout: \(stdOutput)\n\nstderr: \(errorOutput)")
-            return
-        }
-        
+        updateProgress(0.9)
         updateStatus("Loading stems...")
         
-        // Load stem files in order
+        // Collect stem paths
         var loadedStems: [(name: String, displayName: String, url: URL)] = []
-        for (i, stemName) in Self.demucsStems.enumerated() {
-            if let stemPath = stems[stemName] {
-                let stemURL = URL(fileURLWithPath: stemPath)
-                if FileManager.default.fileExists(atPath: stemURL.path) {
-                    loadedStems.append((stemName, Self.demucsDisplayNames[i], stemURL))
-                }
+        
+        for i in 0..<Int(result.stem_count) {
+            guard let namePtr = result.stem_names?[i],
+                  let pathPtr = result.stem_paths?[i] else {
+                continue
+            }
+            
+            let name = String(cString: namePtr)
+            let path = String(cString: pathPtr)
+            let stemURL = URL(fileURLWithPath: path)
+            
+            // Find display name
+            let displayName: String
+            if let idx = Self.demucsStems.firstIndex(of: name) {
+                displayName = Self.demucsDisplayNames[idx]
+            } else {
+                displayName = name.capitalized
+            }
+            
+            if FileManager.default.fileExists(atPath: stemURL.path) {
+                loadedStems.append((name, displayName, stemURL))
             }
         }
+        
+        // Free the result
+        demucs_free_result(result)
         
         if loadedStems.isEmpty {
             handleError("No stems were produced by Demucs")
             return
         }
+        
+        // Sort stems in expected order
+        loadedStems.sort { stem1, stem2 in
+            let idx1 = Self.demucsStems.firstIndex(of: stem1.name) ?? Int.max
+            let idx2 = Self.demucsStems.firstIndex(of: stem2.name) ?? Int.max
+            return idx1 < idx2
+        }
+        
+        updateProgress(1.0)
         
         // Load audio buffers
         loadStemFiles(stems: loadedStems)
@@ -938,23 +936,6 @@ class AudioEngine: ObservableObject {
         DispatchQueue.main.async {
             self.processingProgress = clamped
         }
-    }
-    
-    private func parseDemucsProgress(_ line: String) -> Double? {
-        // Parse tqdm-like progress lines, e.g. "  1%|...| 0.6/58.5 [00:01<...]"
-        let tokens = line.split(separator: " ")
-        for token in tokens {
-            if token.contains("/") {
-                let parts = token.split(separator: "/")
-                if parts.count == 2,
-                   let current = Double(parts[0].filter { "0123456789.".contains($0) }),
-                   let total = Double(parts[1].filter { "0123456789.".contains($0) }),
-                   total > 0 {
-                    return current / total
-                }
-            }
-        }
-        return nil
     }
     
     private func handleError(_ message: String) {

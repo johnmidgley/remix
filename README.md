@@ -2,6 +2,8 @@
 
 Audio stem separation tool with a native macOS mixer interface. Uses AI-powered Demucs for professional-quality instrument separation.
 
+**Pure Rust implementation** - no Python dependencies required at runtime.
+
 ## Features
 
 - **AI Instrument Separation**: Splits audio into 6 stems using Demucs:
@@ -12,20 +14,21 @@ Audio stem separation tool with a native macOS mixer interface. Uses AI-powered 
 - **Solo/Mute**: Isolate or mute individual stems
 - **Playback**: Listen to your mix in real-time
 - **Export**: Bounce your custom mix to a WAV file
+- **No Python Required**: Uses ONNX Runtime for native inference
 
 ## Native macOS App
 
 ### Building
 
 ```bash
-# Standard build (includes bundled Demucs models)
+# Standard build (includes bundled Demucs ONNX model)
 ./build-macos-app.sh
 
-# Build without models (smaller app, downloads on first use)
+# Build without models (smaller app, requires manual model download)
 ./build-macos-app.sh --no-models
 ```
 
-By default, the build script pre-downloads the Demucs AI model (~80MB) and bundles it with the app. This eliminates the model download for end users. Use `--no-models` for a smaller app that downloads models on first use.
+By default, the build script downloads the Demucs ONNX model (~85MB) and bundles it with the app. Use `--no-models` for a smaller app (you'll need to provide the model separately).
 
 ### Running
 
@@ -35,10 +38,40 @@ open "Remix.app"
 
 ### Requirements
 
-- **Python 3** (installed at `/usr/bin/python3`, `/usr/local/bin/python3`, or `/opt/homebrew/bin/python3`)
-- **Demucs** will be auto-installed on first use (~4GB download for Python packages)
-- If built with `--with-models`, the AI model is pre-bundled (~80MB saved)
-- First separation takes several minutes; subsequent runs are faster
+- **Rust** (for building)
+- **Xcode Command Line Tools** (for Swift compilation)
+- **ONNX Runtime** - Install via Homebrew:
+  ```bash
+  brew install onnxruntime
+  ```
+
+### ONNX Model Setup
+
+The app requires a Demucs ONNX model for stem separation. You have two options:
+
+**Option 1: Automatic download** (if a pre-built model is available)
+```bash
+./build-macos-app.sh  # Will attempt to download the model
+```
+
+**Option 2: Convert from PyTorch** (one-time Python step)
+```bash
+# Create and enter models directory
+mkdir -p models && cd models
+
+# Install Python dependencies (one-time)
+pip install demucs torch onnx
+
+# Run the conversion script (created by build if download fails)
+python convert_demucs.py
+
+# Return to project root and rebuild
+cd .. && ./build-macos-app.sh
+```
+
+After conversion, you won't need Python anymore - the app runs entirely on Rust/ONNX Runtime.
+
+- First separation takes 2-5 minutes depending on audio length
 
 ### Using the App
 
@@ -81,15 +114,28 @@ Demucs v4 uses a hybrid transformer architecture:
 3. Trained on MUSDB18-HQ + 800 additional songs
 4. Achieves 9.0+ dB SDR (Signal-to-Distortion Ratio)
 
+The model runs via ONNX Runtime for efficient cross-platform inference.
+
 ## Building from Source
 
 ```bash
+# Install dependencies
+brew install onnxruntime
+
+# Build the app
 ./build-macos-app.sh
 ```
 
+## Architecture
+
+The app is built with:
+- **Rust**: Audio processing, ONNX inference, and FFI layer
+- **Swift/SwiftUI**: Native macOS user interface
+- **ONNX Runtime**: Neural network inference
+
 ## Notes
 
-- Demucs requires ~4GB disk space for models (downloaded on first run)
+- ONNX model size: ~85MB (bundled with app by default)
 - Processing time: ~2-5 minutes for a typical 3-4 minute song
-- GPU acceleration available if CUDA is configured
 - Supports WAV and MP3 input; output is always WAV
+- Caches analysis results for faster subsequent loads

@@ -5,8 +5,7 @@ set -e
 # This script compiles the Rust library and builds the Swift macOS app
 #
 # Options:
-#   --no-models    Skip bundling Demucs models (smaller app, but requires
-#                  ~4GB download on first use)
+#   --no-models    Skip bundling Demucs models (smaller app, downloads on first use)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -24,11 +23,11 @@ for arg in "$@"; do
 done
 
 echo "=========================================="
-echo "Building Remix for macOS"
+echo "Building Remix for macOS (Pure Rust)"
 if [ "$BUNDLE_MODELS" = true ]; then
-    echo "(with bundled Demucs models)"
+    echo "(with bundled Demucs ONNX model)"
 else
-    echo "(without models - will download on first use)"
+    echo "(without models - will need manual download)"
 fi
 echo "=========================================="
 
@@ -36,10 +35,10 @@ echo "=========================================="
 ARCH=$(uname -m)
 echo "Architecture: $ARCH"
 
-# Build Rust library
+# Build Rust library and binaries
 echo ""
-echo "Step 1: Building Rust library..."
-cargo build --release --lib
+echo "Step 1: Building Rust library and tools..."
+cargo build --release
 
 # Check if library was built
 if [ ! -f "target/release/libmusic_tool.a" ]; then
@@ -161,30 +160,47 @@ fi
 
 echo "Swift application compiled successfully"
 
-# Copy resources (Python + app icon)
+# Generate app icon using Rust binary
 echo ""
-echo "Step 4: Copying resources..."
-cp "$SCRIPT_DIR/scripts/demucs_separate.py" "$RESOURCES_DIR/"
-python3 "$SCRIPT_DIR/scripts/generate_app_icon.py"
+echo "Step 4: Generating app icon..."
+"$SCRIPT_DIR/target/release/generate_icon"
 cp "$SCRIPT_DIR/scripts/Remix.icns" "$RESOURCES_DIR/"
 
-# Download and bundle models if requested
+# Download and bundle ONNX model if requested
 if [ "$BUNDLE_MODELS" = true ]; then
     echo ""
-    echo "Step 4b: Downloading and bundling Demucs models..."
+    echo "Step 4b: Downloading/bundling Demucs ONNX model..."
     MODELS_DIR="$RESOURCES_DIR/models"
     mkdir -p "$MODELS_DIR"
     
-    # Run the download script
-    python3 "$SCRIPT_DIR/scripts/download_models.py" -o "$MODELS_DIR" -m htdemucs_6s
+    # Check if model already exists in project
+    if [ -f "$SCRIPT_DIR/models/htdemucs_6s.onnx" ]; then
+        echo "Using existing model from project directory"
+        cp "$SCRIPT_DIR/models/htdemucs_6s.onnx" "$MODELS_DIR/"
+    else
+        # Try to download
+        "$SCRIPT_DIR/target/release/download_models" -o "$MODELS_DIR" -m htdemucs_6s
+    fi
     
-    if [ $? -eq 0 ]; then
-        echo "Models bundled successfully"
-        # Show size
+    if [ -f "$MODELS_DIR/htdemucs_6s.onnx" ]; then
+        echo "ONNX model bundled successfully"
         MODELS_SIZE=$(du -sh "$MODELS_DIR" | cut -f1)
         echo "Models directory size: $MODELS_SIZE"
     else
-        echo "Warning: Failed to download models, app will download on first use"
+        echo ""
+        echo "================================================"
+        echo "NOTE: ONNX model not bundled"
+        echo ""
+        echo "To use stem separation, you need to convert the"
+        echo "Demucs model to ONNX format (one-time Python step):"
+        echo ""
+        echo "  mkdir -p models && cd models"
+        echo "  pip install demucs torch onnx"
+        echo "  python convert_demucs.py"
+        echo ""
+        echo "Then rebuild the app, or manually copy the model to:"
+        echo "  $MODELS_DIR/htdemucs_6s.onnx"
+        echo "================================================"
     fi
 fi
 

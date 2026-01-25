@@ -11,6 +11,10 @@
 extern "C" {
 #endif
 
+// ============================================================================
+// Audio Conversion
+// ============================================================================
+
 // Result from audio conversion
 typedef struct {
     uint8_t* data;
@@ -42,6 +46,45 @@ ConvertResultFFI pca_convert_to_wav(
 void pca_free_bytes(uint8_t* ptr, size_t len);
 
 void pca_free_error(char* ptr);
+
+// ============================================================================
+// Demucs Stem Separation
+// ============================================================================
+
+// Opaque handle to a loaded Demucs model
+typedef struct DemucsModelHandle DemucsModelHandle;
+
+// Result from stem separation
+typedef struct {
+    uint32_t stem_count;      // Number of stems (usually 6)
+    char** stem_names;        // Array of stem names
+    char** stem_paths;        // Array of stem file paths
+    char* error;              // Error message (null if success)
+} SeparationResultFFI;
+
+// Load a Demucs ONNX model from file
+// Returns null on failure
+DemucsModelHandle* demucs_load_model(const char* model_path);
+
+// Free a Demucs model handle
+void demucs_free_model(DemucsModelHandle* handle);
+
+// Separate audio file into stems
+// Caller must free result with demucs_free_result
+SeparationResultFFI demucs_separate(
+    DemucsModelHandle* handle,
+    const char* input_path,
+    const char* output_dir
+);
+
+// Free a separation result
+void demucs_free_result(SeparationResultFFI result);
+
+// Get the number of stems the model produces (6 for htdemucs_6s)
+uint32_t demucs_stem_count(void);
+
+// Get a stem name by index (returns static string, do not free)
+const char* demucs_stem_name(uint32_t index);
 
 #ifdef __cplusplus
 }

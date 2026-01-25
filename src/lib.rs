@@ -1,8 +1,9 @@
 //! Audio processing library
 //! 
-//! Provides audio loading and encoding utilities for the Remix app.
+//! Provides audio loading, encoding, and stem separation utilities for the Remix app.
 
 pub mod ffi;
+pub mod demucs;
 
 use anyhow::{Context, Result, anyhow};
 use hound::{SampleFormat, WavReader, WavSpec};
