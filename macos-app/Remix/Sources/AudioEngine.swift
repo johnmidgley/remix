@@ -193,6 +193,68 @@ class CacheManager {
         }
         return size
     }
+    
+    /// Get all cached files with their metadata
+    func getAllCachedFiles() -> [(metadata: CacheMetadata, key: String)] {
+        var results: [(CacheMetadata, String)] = []
+        
+        guard let contents = try? fileManager.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+            return results
+        }
+        
+        for itemURL in contents {
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: itemURL.path, isDirectory: &isDir), isDir.boolValue else {
+                continue
+            }
+            
+            let metadataURL = itemURL.appendingPathComponent("metadata.json")
+            guard let data = try? Data(contentsOf: metadataURL),
+                  let metadata = try? JSONDecoder().decode(CacheMetadata.self, from: data) else {
+                continue
+            }
+            
+            let key = itemURL.lastPathComponent
+            results.append((metadata, key))
+        }
+        
+        return results
+    }
+    
+    /// Load stems directly from cache key (when original file may not exist)
+    func getStemURLsFromKey(_ key: String) -> [(name: String, url: URL)]? {
+        let dir = cacheDirectory(for: key)
+        let metadataURL = dir.appendingPathComponent("metadata.json")
+        
+        guard let data = try? Data(contentsOf: metadataURL),
+              let metadata = try? JSONDecoder().decode(CacheMetadata.self, from: data) else {
+            return nil
+        }
+        
+        var stems: [(name: String, url: URL)] = []
+        
+        for stemName in metadata.stemNames {
+            let stemURL = dir.appendingPathComponent("\(stemName).wav")
+            if fileManager.fileExists(atPath: stemURL.path) {
+                stems.append((stemName, stemURL))
+            }
+        }
+        
+        return stems.isEmpty ? nil : stems
+    }
+    
+    /// Get metadata from cache key
+    func getMetadataFromKey(_ key: String) -> CacheMetadata? {
+        let dir = cacheDirectory(for: key)
+        let metadataURL = dir.appendingPathComponent("metadata.json")
+        
+        guard let data = try? Data(contentsOf: metadataURL),
+              let metadata = try? JSONDecoder().decode(CacheMetadata.self, from: data) else {
+            return nil
+        }
+        
+        return metadata
+    }
 }
 
 /// Wrapper for audio separation and mixing
@@ -352,6 +414,77 @@ class AudioEngine: ObservableObject {
     func loadFromCache() {
         guard let url = currentInputURL else { return }
         loadFromCache(url: url)
+    }
+    
+    /// Load directly from cache key (when original file may not exist)
+    func loadFromCacheKey(_ key: String) {
+        guard let metadata = CacheManager.shared.getMetadataFromKey(key),
+              let stems = CacheManager.shared.getStemURLsFromKey(key) else {
+            handleError("Could not load cached analysis")
+            return
+        }
+        
+        cleanup()
+        
+        DispatchQueue.main.async {
+            self.fileName = URL(fileURLWithPath: metadata.originalPath).lastPathComponent
+            self.isProcessing = true
+            self.processingStatus = "Loading from cache..."
+            self.processingProgress = 0.5
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            // Convert to expected format
+            let loadedStems = stems.map { (name: $0.name, displayName: $0.name, url: $0.url) }
+            
+            // Load buffers
+            var buffers: [AVAudioPCMBuffer] = []
+            var names: [String] = []
+            
+            for stem in loadedStems {
+                do {
+                    let file = try AVAudioFile(forReading: stem.url)
+                    let frameCount = AVAudioFrameCount(file.length)
+                    guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount) else {
+                        continue
+                    }
+                    try file.read(into: buffer)
+                    buffers.append(buffer)
+                    names.append(stem.displayName)
+                } catch {
+                    print("Failed to load cached stem \(stem.name): \(error)")
+                }
+            }
+            
+            DispatchQueue.main.async {
+                self.cleanupOriginalPlayer()
+                
+                self.audioBuffers = buffers
+                self.stemNames = names
+                self.componentCount = buffers.count
+                self.sampleRate = metadata.sampleRate
+                self.duration = metadata.duration
+                
+                self.faderValues = Array(repeating: 1.0, count: buffers.count)
+                self.soloStates = Array(repeating: false, count: buffers.count)
+                self.muteStates = Array(repeating: false, count: buffers.count)
+                self.meterLevels = Array(repeating: 0.0, count: buffers.count)
+                self.selectionStart = 0
+                self.selectionEnd = 0
+                
+                self.setupPlayerNodes()
+                self.computeWaveformSamples()
+                
+                self.hasLoadedFile = false
+                self.hasSession = true
+                self.loadedFromCache = true
+                self.isProcessing = false
+                self.processingStatus = ""
+                self.processingProgress = 1
+            }
+        }
     }
     
     /// Load stems from cache

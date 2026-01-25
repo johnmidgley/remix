@@ -44,6 +44,8 @@ struct FileBrowserView: View {
     @State private var directoryContents: [FileItem] = []
     @State private var selectedFile: URL?
     @State private var quickAccessLocations: [QuickAccessItem] = []
+    @State private var isShowingCache: Bool = false
+    @State private var cachedItems: [CachedFileItem] = []
     
     struct FileItem: Identifiable, Hashable {
         let id = UUID()
@@ -61,11 +63,36 @@ struct FileBrowserView: View {
         }
     }
     
+    struct CachedFileItem: Identifiable {
+        let id = UUID()
+        let originalPath: String
+        let fileName: String
+        let stemCount: Int
+        let duration: Double
+        let createdAt: Date
+        let cacheKey: String
+    }
+    
     struct QuickAccessItem: Identifiable {
         let id = UUID()
         let name: String
         let icon: String
-        let url: URL
+        let url: URL?  // nil for special items like Cache
+        let isSpecial: Bool
+        
+        init(name: String, icon: String, url: URL) {
+            self.name = name
+            self.icon = icon
+            self.url = url
+            self.isSpecial = false
+        }
+        
+        init(name: String, icon: String, isSpecial: Bool) {
+            self.name = name
+            self.icon = icon
+            self.url = nil
+            self.isSpecial = isSpecial
+        }
     }
     
     var body: some View {
@@ -79,9 +106,9 @@ struct FileBrowserView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(Color(hex: "888888"))
-                    .disabled(audioEngine.currentDirectory.path == "/")
+                    .disabled(isShowingCache || audioEngine.currentDirectory.path == "/")
                     
-                    Text(audioEngine.currentDirectory.lastPathComponent)
+                    Text(isShowingCache ? "Cache" : audioEngine.currentDirectory.lastPathComponent)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.white)
                         .lineLimit(1)
@@ -99,27 +126,47 @@ struct FileBrowserView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 
-                // Breadcrumb path
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(pathComponents, id: \.self) { component in
-                            Button(action: { navigateTo(component) }) {
-                                Text(component.lastPathComponent.isEmpty ? "/" : component.lastPathComponent)
+                // Breadcrumb path (hidden when showing cache)
+                if !isShowingCache {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(pathComponents, id: \.self) { component in
+                                Button(action: { navigateTo(component) }) {
+                                    Text(component.lastPathComponent.isEmpty ? "/" : component.lastPathComponent)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Color(hex: "666666"))
+                                }
+                                .buttonStyle(.plain)
+                                
+                                if component != audioEngine.currentDirectory {
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(Color(hex: "444444"))
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                    }
+                    .frame(height: 20)
+                } else {
+                    // Cache info bar
+                    HStack {
+                        Text("\(cachedItems.count) cached analysis\(cachedItems.count == 1 ? "" : "es")")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color(hex: "666666"))
+                        Spacer()
+                        if !cachedItems.isEmpty {
+                            Button(action: clearAllCache) {
+                                Text("Clear All")
                                     .font(.system(size: 10))
-                                    .foregroundColor(Color(hex: "666666"))
+                                    .foregroundColor(Color(hex: "ff453a"))
                             }
                             .buttonStyle(.plain)
-                            
-                            if component != audioEngine.currentDirectory {
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 8))
-                                    .foregroundColor(Color(hex: "444444"))
-                            }
                         }
                     }
                     .padding(.horizontal, 12)
+                    .frame(height: 20)
                 }
-                .frame(height: 20)
             }
             .background(Color(hex: "252525"))
             
@@ -139,8 +186,11 @@ struct FileBrowserView: View {
                             .padding(.bottom, 6)
                         
                         ForEach(quickAccessLocations) { location in
-                            QuickAccessRowView(item: location) {
-                                audioEngine.currentDirectory = location.url
+                            QuickAccessRowView(
+                                item: location,
+                                isSelected: location.isSpecial && isShowingCache
+                            ) {
+                                handleQuickAccessTap(location)
                             }
                         }
                         
@@ -149,14 +199,39 @@ struct FileBrowserView: View {
                             .padding(.vertical, 8)
                     }
                     
-                    // Current directory contents
-                    ForEach(directoryContents) { item in
-                        FileRowView(
-                            item: item,
-                            isSelected: selectedFile == item.url,
-                            onSingleClick: { selectFile(item) },
-                            onDoubleClick: { openItem(item) }
-                        )
+                    // Content: either cache items or directory contents
+                    if isShowingCache {
+                        if cachedItems.isEmpty {
+                            VStack(spacing: 8) {
+                                Image(systemName: "tray")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(Color(hex: "444444"))
+                                Text("No cached analyses")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(Color(hex: "666666"))
+                                Text("Analyzed files will appear here")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Color(hex: "555555"))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 40)
+                        } else {
+                            ForEach(cachedItems) { item in
+                                CachedFileRowView(item: item) {
+                                    loadCachedItem(item)
+                                }
+                            }
+                        }
+                    } else {
+                        // Current directory contents
+                        ForEach(directoryContents) { item in
+                            FileRowView(
+                                item: item,
+                                isSelected: selectedFile == item.url,
+                                onSingleClick: { selectFile(item) },
+                                onDoubleClick: { openItem(item) }
+                            )
+                        }
                     }
                 }
             }
@@ -166,7 +241,11 @@ struct FileBrowserView: View {
             loadQuickAccessLocations()
             loadDirectory()
         }
-        .onChange(of: audioEngine.currentDirectory) { _ in loadDirectory() }
+        .onChange(of: audioEngine.currentDirectory) { _ in
+            if !isShowingCache {
+                loadDirectory()
+            }
+        }
     }
     
     func loadQuickAccessLocations() {
@@ -201,6 +280,9 @@ struct FileBrowserView: View {
             locations.append(QuickAccessItem(name: "Music", icon: "music.note", url: music))
         }
         
+        // Cache (special item)
+        locations.append(QuickAccessItem(name: "Cache", icon: "archivebox.fill", isSpecial: true))
+        
         // Cloud Storage (Google Drive, iCloud, Dropbox, OneDrive)
         let cloudStorage = home.appendingPathComponent("Library/CloudStorage")
         if let cloudContents = try? fm.contentsOfDirectory(at: cloudStorage, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
@@ -228,6 +310,45 @@ struct FileBrowserView: View {
         }
         
         quickAccessLocations = locations
+    }
+    
+    func handleQuickAccessTap(_ location: QuickAccessItem) {
+        if location.isSpecial && location.name == "Cache" {
+            isShowingCache = true
+            loadCachedFiles()
+        } else if let url = location.url {
+            isShowingCache = false
+            audioEngine.currentDirectory = url
+        }
+    }
+    
+    func loadCachedFiles() {
+        cachedItems = CacheManager.shared.getAllCachedFiles().map { metadata, key in
+            CachedFileItem(
+                originalPath: metadata.originalPath,
+                fileName: URL(fileURLWithPath: metadata.originalPath).lastPathComponent,
+                stemCount: metadata.stemNames.count,
+                duration: metadata.duration,
+                createdAt: metadata.createdAt,
+                cacheKey: key
+            )
+        }.sorted { $0.createdAt > $1.createdAt }
+    }
+    
+    func loadCachedItem(_ item: CachedFileItem) {
+        let originalURL = URL(fileURLWithPath: item.originalPath)
+        // Check if original file still exists
+        if FileManager.default.fileExists(atPath: item.originalPath) {
+            audioEngine.loadFile(url: originalURL)
+        } else {
+            // Try to load from cache directly even if original doesn't exist
+            audioEngine.loadFromCacheKey(item.cacheKey)
+        }
+    }
+    
+    func clearAllCache() {
+        CacheManager.shared.clearAllCache()
+        loadCachedFiles()
     }
     
     var pathComponents: [URL] {
@@ -276,8 +397,13 @@ struct FileBrowserView: View {
     }
     
     func navigateUp() {
-        let parent = audioEngine.currentDirectory.deletingLastPathComponent()
-        audioEngine.currentDirectory = parent
+        if isShowingCache {
+            isShowingCache = false
+            loadDirectory()
+        } else {
+            let parent = audioEngine.currentDirectory.deletingLastPathComponent()
+            audioEngine.currentDirectory = parent
+        }
     }
     
     func navigateTo(_ url: URL) {
@@ -300,13 +426,14 @@ struct FileBrowserView: View {
 
 struct QuickAccessRowView: View {
     let item: FileBrowserView.QuickAccessItem
+    var isSelected: Bool = false
     let onTap: () -> Void
     
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: item.icon)
                 .font(.system(size: 12))
-                .foregroundColor(Color(hex: "0a84ff"))
+                .foregroundColor(item.isSpecial ? Color(hex: "ff9f0a") : Color(hex: "0a84ff"))
                 .frame(width: 18)
             
             Text(item.name)
@@ -318,8 +445,63 @@ struct QuickAccessRowView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
+        .background(isSelected ? Color(hex: "0a84ff").opacity(0.2) : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
+    }
+}
+
+struct CachedFileRowView: View {
+    let item: FileBrowserView.CachedFileItem
+    let onTap: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "waveform.circle.fill")
+                .font(.system(size: 14))
+                .foregroundColor(Color(hex: "30d158"))
+                .frame(width: 18)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.fileName)
+                    .font(.system(size: 12))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                
+                HStack(spacing: 8) {
+                    Text("\(item.stemCount) stems")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(hex: "888888"))
+                    
+                    Text(formatDuration(item.duration))
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(hex: "666666"))
+                    
+                    Text(formatDate(item.createdAt))
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(hex: "555555"))
+                }
+            }
+            
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
+    }
+    
+    func formatDuration(_ seconds: Double) -> String {
+        let mins = Int(seconds) / 60
+        let secs = Int(seconds) % 60
+        return String(format: "%d:%02d", mins, secs)
+    }
+    
+    func formatDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
 
