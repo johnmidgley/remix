@@ -146,11 +146,27 @@ fi
 
 echo "Swift application compiled successfully"
 
-# Generate app icon using Rust binary
+# Generate app icon
 echo ""
 echo "Step 4: Generating app icon..."
-"$SCRIPT_DIR/target/release/generate_icon"
-cp "$SCRIPT_DIR/scripts/Remix.icns" "$RESOURCES_DIR/"
+ICONSET_DIR="$SCRIPT_DIR/scripts/Remix.iconset"
+ICNS_PATH="$SCRIPT_DIR/scripts/Remix.icns"
+SOURCE_PNG="$SCRIPT_DIR/scripts/Remix.png"
+
+if [ -f "$SOURCE_PNG" ]; then
+    echo "Using Remix.png as icon source..."
+    mkdir -p "$ICONSET_DIR"
+    for size in 16 32 128 256 512; do
+        sips -z $size $size "$SOURCE_PNG" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
+        double=$((size * 2))
+        sips -z $double $double "$SOURCE_PNG" --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
+    done
+    iconutil -c icns "$ICONSET_DIR" -o "$ICNS_PATH"
+else
+    echo "No Remix.png found, generating icon..."
+    "$SCRIPT_DIR/target/release/generate_icon"
+fi
+cp "$ICNS_PATH" "$RESOURCES_DIR/"
 
 # Note: ONNX models no longer needed - app uses Python demucs subprocess
 
