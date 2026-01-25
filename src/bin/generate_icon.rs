@@ -34,34 +34,16 @@ fn lerp_color(a: Rgba<u8>, b: Rgba<u8>, t: f32) -> Rgba<u8> {
     ])
 }
 
-fn with_alpha(c: Rgba<u8>, a: f32) -> Rgba<u8> {
-    let a = a.clamp(0.0, 1.0);
-    Rgba([c[0], c[1], c[2], clamp_u8(255.0 * a)])
-}
-
-fn blend_over(dst: Rgba<u8>, src: Rgba<u8>) -> Rgba<u8> {
-    let sa = (src[3] as f32) / 255.0;
-    if sa <= 0.0 {
+fn add_light(dst: Rgba<u8>, light: Rgba<u8>, strength: f32) -> Rgba<u8> {
+    // Additive blend for "glow" (background is already opaque inside the icon).
+    let s = strength.clamp(0.0, 1.5);
+    if s <= 0.0 {
         return dst;
     }
-    let da = (dst[3] as f32) / 255.0;
-
-    // Straight alpha blending
-    let out_a = sa + da * (1.0 - sa);
-    if out_a <= 0.0 {
-        return Rgba([0, 0, 0, 0]);
-    }
-
-    let out_r = (src[0] as f32) * sa + (dst[0] as f32) * da * (1.0 - sa);
-    let out_g = (src[1] as f32) * sa + (dst[1] as f32) * da * (1.0 - sa);
-    let out_b = (src[2] as f32) * sa + (dst[2] as f32) * da * (1.0 - sa);
-
-    Rgba([
-        clamp_u8(out_r / out_a),
-        clamp_u8(out_g / out_a),
-        clamp_u8(out_b / out_a),
-        clamp_u8(out_a * 255.0),
-    ])
+    let r = (dst[0] as f32 + (light[0] as f32) * s).clamp(0.0, 255.0);
+    let g = (dst[1] as f32 + (light[1] as f32) * s).clamp(0.0, 255.0);
+    let b = (dst[2] as f32 + (light[2] as f32) * s).clamp(0.0, 255.0);
+    Rgba([clamp_u8(r), clamp_u8(g), clamp_u8(b), dst[3]])
 }
 
 /// Check if point is inside rounded rectangle
@@ -101,15 +83,30 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn waveform_y(t: f32, base: f32, amp: f32, freq: f32, phase: f32) -> f32 {
-    // Mostly-sine waveform with gentle, non-chaotic variability:
-    // - slight amplitude envelope
-    // - tiny 2nd harmonic for character
-    let w = std::f32::consts::TAU * freq;
-    let env = 0.92 + 0.08 * (std::f32::consts::TAU * 0.55 * t + phase * 0.18).sin();
-    let s1 = (w * t + phase).sin();
-    let s2 = (w * 2.0 * t + phase * 0.63).sin();
-    base + (amp * env) * (0.88 * s1 + 0.12 * s2)
+fn gaussian(x: f32, mu: f32, sigma: f32) -> f32 {
+    let z = (x - mu) / sigma.max(1e-4);
+    (-0.5 * z * z).exp()
+}
+
+fn golden_ribbon_y(t: f32, mid: f32, h: f32, phase: f32, offset: f32) -> f32 {
+    // Shape inspired by the provided reference:
+    // - a left "scoop" and a broad rise
+    // - a gentle wiggle riding on top
+    let dip = -0.22 * h * gaussian(t, 0.16, 0.18);
+    let bump = 0.26 * h * gaussian(t, 0.70, 0.24);
+    let wiggle = 0.075 * h * (std::f32::consts::TAU * 1.05 * t + phase).sin();
+    mid + dip + bump + wiggle + offset
+}
+
+fn approx_ribbon_cos_factor(t: f32, mid: f32, h: f32, phase: f32, offset: f32, w: f32) -> f32 {
+    // Approximate cos(theta) where theta is the curve angle,
+    // used to convert vertical distance into approximate normal distance.
+    let dt = 1.0 / 2048.0;
+    let y0 = golden_ribbon_y(t - dt, mid, h, phase, offset);
+    let y1 = golden_ribbon_y(t + dt, mid, h, phase, offset);
+    let dy_dt = (y1 - y0) / (2.0 * dt);
+    let dy_dx = dy_dt / w.max(1.0);
+    1.0 / (1.0 + dy_dx * dy_dx).sqrt()
 }
 
 /// Draw the Remix app icon at a given resolution.
@@ -118,7 +115,7 @@ fn draw_icon(resolution: u32) -> RgbaImage {
     let mut img = RgbaImage::new(resolution, resolution);
 
     // Black background with subtle depth (still reads as "black")
-    let bg_top = color("#111216");
+    let bg_top = color("#101117");
     let bg_bottom = color("#05060A");
 
     // Rounded rect parameters
@@ -132,27 +129,15 @@ fn draw_icon(resolution: u32) -> RgbaImage {
     let y1 = resolution as i32 - inset - 1;
     let content_h = (y1 - y0).max(1) as f32;
 
-    // 5 waveform strokes (Apple system colors)
-    // User requested: add Red back in too.
-    let stroke_colors = [
-        color("#FF3B30"), // red
-        color("#34C759"), // green
-        color("#007AFF"), // blue
-        color("#FF9500"), // orange
-        color("#FFCC00"), // yellow
-    ];
-    let stroke_count = stroke_colors.len() as i32;
-
-    // Waveform geometry
-    let freq = 1.28;
-    let amp_base = content_h * 0.12;
-    let stroke_half = (content_h * 0.028).clamp(6.0, content_h * 0.05);
-    let shadow = with_alpha(color("#000000"), 0.35);
-    let shadow_offset = (resolution as f32 * 0.005).clamp(2.0, 14.0);
+    // Golden light-curve palette (core + warm glow)
+    let gold_core = color("#FFE8B0");
+    let gold_hot = color("#FFD27A");
+    let gold_warm = color("#FFB54A");
+    let gold_deep = color("#FF8A1C");
 
     for y in 0..resolution {
         let ty = y as f32 / (resolution - 1).max(1) as f32;
-        let bg = lerp_color(bg_top, bg_bottom, ty);
+        let base_bg = lerp_color(bg_top, bg_bottom, ty);
 
         for x in 0..resolution {
             if !in_rounded_rect(x, y, resolution, radius) {
@@ -160,53 +145,87 @@ fn draw_icon(resolution: u32) -> RgbaImage {
                 continue;
             }
 
-            let mut px = bg;
+            // Subtle vignette
+            let cx = (resolution as f32 - 1.0) * 0.5;
+            let cy = (resolution as f32 - 1.0) * 0.5;
+            let dx = (x as f32 - cx) / cx.max(1.0);
+            let dy = (y as f32 - cy) / cy.max(1.0);
+            let r2 = dx * dx + dy * dy;
+            let vig = (1.0 - 0.22 * smoothstep(0.15, 1.0, r2.sqrt())).clamp(0.0, 1.0);
+            let mut px = Rgba([
+                clamp_u8((base_bg[0] as f32) * vig),
+                clamp_u8((base_bg[1] as f32) * vig),
+                clamp_u8((base_bg[2] as f32) * vig),
+                255,
+            ]);
 
             let xi = x as i32;
             let yi = y as i32;
-            if xi >= x0 && xi <= x1 && yi >= y0 && yi <= y1 {
-                let t = (xi - x0) as f32 / ((x1 - x0).max(1)) as f32;
-                let yf = yi as f32;
+            // Map ribbon parameterization to a "safe" inner width, but allow t < 0 and t > 1
+            // so the glow can naturally extend towards the icon edges (no hard crop).
+            let w = ((x1 - x0).max(1)) as f32;
+            let t = (xi - x0) as f32 / w;
+            let tc = t.clamp(0.0, 1.0);
+            let yf = yi as f32;
 
-                // Center the 5 waveforms vertically within the content area.
-                // Use tighter spacing so they can overlap a bit.
-                let top_pad = content_h * 0.22;
-                let bottom_pad = content_h * 0.22;
-                let usable_h = (content_h - top_pad - bottom_pad).max(1.0);
-                let spacing = (usable_h / (stroke_count as f32 - 1.0).max(1.0)) * 0.82;
+            // Ribbon placement
+            let mid = y0 as f32 + content_h * 0.50;
+            let h = content_h;
 
-                // Fade in/out near left/right edges for rounded stroke ends.
-                let edge_w = 0.065;
-                let edge_fade = smoothstep(0.0, edge_w, t) * smoothstep(0.0, edge_w, 1.0 - t);
+            // Fade out to a thin tip on the right; allow a bright bloom on the left.
+            let tip_fade = smoothstep(0.0, 0.10, 1.0 - tc);
+            let head_boost = 1.0 + 0.95 * gaussian(t, 0.02, 0.10);
 
-                // Draw each waveform as a stroked curve with soft edges.
-                for i in 0..stroke_count {
-                    let base_y = y0 as f32 + top_pad + spacing * (i as f32);
-                    let amp = amp_base * (0.92 + 0.04 * (i as f32));
-                    let phase = 0.35 + 0.92 * (i as f32);
-                    let f = freq * (1.0 + 0.035 * (i as f32));
-                    let yc = waveform_y(t, base_y, amp, f, phase);
+            // Color gradient along the ribbon (warmer at the head, paler at the tip)
+            let grad_t = smoothstep(0.0, 1.0, tc);
+            let warm = lerp_color(gold_deep, gold_hot, grad_t);
+            let core = lerp_color(gold_warm, gold_core, grad_t * 0.9);
+            let deep = lerp_color(color("#6B2B00"), gold_deep, grad_t);
 
-                    // Distance from current pixel row to the curve.
-                    let d = (yf - yc).abs();
+            // Multiple strands to suggest a light ribbon (kept tight like the reference)
+            let strands = [
+                (-0.055 * h, 0.55, 1.00),
+                (-0.015 * h, 1.05, 0.95),
+                (0.025 * h, 1.55, 0.90),
+            ];
 
-                    // Anti-aliased stroke coverage (soft edge).
-                    let a = (1.0 - smoothstep(stroke_half - 1.25, stroke_half + 1.25, d)) * edge_fade;
-                    if a <= 0.0 {
-                        continue;
-                    }
+            // Global glow under the ribbon body (helps form the "sheet" on the left)
+            let body_y = golden_ribbon_y(t, mid, h, 0.85, 0.0);
+            let body_cos = approx_ribbon_cos_factor(t, mid, h, 0.85, 0.0, w);
+            let body_d = (yf - body_y).abs() * body_cos;
+            let body_sigma = (h * 0.11).max(10.0);
+            let body_i = gaussian(body_d, 0.0, body_sigma) * tip_fade * head_boost;
+            px = add_light(px, gold_warm, body_i * 0.20);
 
-                    // Subtle shadow below the stroke for separation.
-                    let ds = (yf - (yc + shadow_offset)).abs();
-                    let as_ =
-                        (1.0 - smoothstep(stroke_half - 1.0, stroke_half + 2.0, ds)) * edge_fade;
-                    if as_ > 0.0 {
-                        px = blend_over(px, with_alpha(shadow, as_ * 0.55));
-                    }
+            for (off, phase, weight) in strands {
+                let yc = golden_ribbon_y(t, mid, h, phase, off);
+                let cosf = approx_ribbon_cos_factor(t, mid, h, phase, off, w);
+                let d = (yf - yc).abs() * cosf;
 
-                    let c = stroke_colors[i as usize];
-                    px = blend_over(px, with_alpha(c, a));
-                }
+                // Taper thickness strongly towards the right tip
+                let thick = lerp(h * 0.060, h * 0.014, smoothstep(0.10, 1.0, tc)) * weight;
+
+                // Glow layers
+                let core_sigma = (thick * 0.18).max(1.2);
+                let mid_sigma = (thick * 0.55).max(2.8);
+                let glow_sigma = (thick * 1.25).max(6.0);
+
+                let i_core = gaussian(d, 0.0, core_sigma);
+                let i_mid = gaussian(d, 0.0, mid_sigma);
+                let i_glow = gaussian(d, 0.0, glow_sigma);
+
+                let intensity = tip_fade * head_boost * weight;
+
+                // Outer bloom (deep/warm), then hot glow, then bright core.
+                px = add_light(px, deep, i_glow * 0.16 * intensity);
+                px = add_light(px, warm, i_mid * 0.36 * intensity);
+                px = add_light(px, core, i_core * 0.55 * intensity);
+
+                // A thin highlight slightly above the strand to mimic specular
+                let hi_y = yc - thick * 0.16;
+                let dhi = (yf - hi_y).abs() * cosf;
+                let i_hi = gaussian(dhi, 0.0, (thick * 0.14).max(1.0));
+                px = add_light(px, gold_core, i_hi * 0.32 * intensity);
             }
 
             img.put_pixel(x, y, px);
