@@ -242,6 +242,12 @@ struct FileBrowserView: View {
                 loadDirectory()
             }
         }
+        .onChange(of: audioEngine.cacheModifiedCounter) { _ in
+            // Refresh cache list when cache is modified (e.g., reanalyze clears cache)
+            if isShowingCache {
+                loadCachedFiles()
+            }
+        }
     }
     
     func loadQuickAccessLocations() {

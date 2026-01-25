@@ -264,6 +264,7 @@ class AudioEngine: ObservableObject {
     @Published var hasSession: Bool = false      // File has been analyzed and ready for mixing
     @Published var loadedFromCache: Bool = false // Whether current session was loaded from cache
     @Published var hasCachedAnalysis: Bool = false // Whether cache exists for current file
+    @Published var cacheModifiedCounter: Int = 0  // Increments when cache is cleared, to trigger UI refresh
     @Published var componentCount: Int = 0
     @Published var sampleRate: UInt32 = 44100
     @Published var isProcessing: Bool = false
@@ -584,13 +585,18 @@ class AudioEngine: ObservableObject {
         // Clear cache for this file
         CacheManager.shared.clearCache(for: url)
         
+        // Reset state to allow re-analysis, then run analyze
+        // We need hasLoadedFile = true for analyze() to work
         DispatchQueue.main.async {
             self.hasCachedAnalysis = false
             self.loadedFromCache = false
+            self.hasSession = false
+            self.hasLoadedFile = true
+            self.cacheModifiedCounter += 1  // Signal UI to refresh cache list
+            
+            // Run fresh analysis after state is set
+            self.analyze()
         }
-        
-        // Run fresh analysis
-        analyze()
     }
     
     /// Loads original audio file for playback before analysis
@@ -965,6 +971,7 @@ class AudioEngine: ObservableObject {
             self.hasSession = true
             self.loadedFromCache = false  // Fresh analysis
             self.hasCachedAnalysis = true  // Now cached
+            self.cacheModifiedCounter += 1  // Signal UI to refresh cache list
             self.isProcessing = false
             self.processingStatus = ""
             self.processingProgress = 1
