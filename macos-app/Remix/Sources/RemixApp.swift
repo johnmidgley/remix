@@ -10,7 +10,7 @@ struct RemixApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(audioEngine)
-                .frame(minWidth: 900, minHeight: 600)
+                .frame(minWidth: 800, minHeight: 500)
                 .background(WindowAccessor())
                 .sheet(isPresented: $showingHelp) {
                     HelpView(onDismiss: { showingHelp = false })

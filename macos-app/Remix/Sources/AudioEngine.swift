@@ -291,6 +291,7 @@ class AudioEngine: ObservableObject {
     // Stem data
     @Published var stemNames: [String] = []
     @Published var faderValues: [Double] = []
+    @Published var panValues: [Double] = []  // -1.0 (left) to 1.0 (right), 0 = center
     @Published var soloStates: [Bool] = []
     @Published var muteStates: [Bool] = []
     @Published var meterLevels: [Float] = []
@@ -482,6 +483,7 @@ class AudioEngine: ObservableObject {
                 self.duration = metadata.duration
                 
                 self.faderValues = Array(repeating: 1.0, count: buffers.count)
+                self.panValues = Array(repeating: 0.0, count: buffers.count)
                 self.soloStates = Array(repeating: false, count: buffers.count)
                 self.muteStates = Array(repeating: false, count: buffers.count)
                 self.meterLevels = Array(repeating: 0.0, count: buffers.count)
@@ -555,6 +557,7 @@ class AudioEngine: ObservableObject {
                 self.duration = metadata.duration
                 
                 self.faderValues = Array(repeating: 1.0, count: buffers.count)
+                self.panValues = Array(repeating: 0.0, count: buffers.count)
                 self.soloStates = Array(repeating: false, count: buffers.count)
                 self.muteStates = Array(repeating: false, count: buffers.count)
                 self.meterLevels = Array(repeating: 0.0, count: buffers.count)
@@ -948,6 +951,7 @@ class AudioEngine: ObservableObject {
             self.duration = detectedDuration
             
             self.faderValues = Array(repeating: 1.0, count: buffers.count)
+            self.panValues = Array(repeating: 0.0, count: buffers.count)
             self.soloStates = Array(repeating: false, count: buffers.count)
             self.muteStates = Array(repeating: false, count: buffers.count)
             self.meterLevels = Array(repeating: 0.0, count: buffers.count)
@@ -1227,6 +1231,7 @@ class AudioEngine: ObservableObject {
             }
             
             updateGain(for: i)
+            updatePan(for: i)
             player.play()
         }
         
@@ -1310,7 +1315,8 @@ class AudioEngine: ObservableObject {
         }
         
         isPlaying = false
-        stopTimer()
+        // Don't stop timer - let meters decay naturally
+        startMeterDecayTimer()
     }
     
     func stop() {
@@ -1318,12 +1324,11 @@ class AudioEngine: ObservableObject {
             for player in playerNodes { player.stop() }
         } else {
             originalPlayerNode?.stop()
-            originalPeakLevel = 0
-            originalMeterLevel = 0
         }
         
         isPlaying = false
-        stopTimer()
+        // Don't stop timer - let meters decay naturally
+        startMeterDecayTimer()
     }
     
     func stopAndReset() {
@@ -1347,6 +1352,12 @@ class AudioEngine: ObservableObject {
         updateGain(for: index)
     }
     
+    func setPanValue(_ value: Double, for index: Int) {
+        guard index < panValues.count else { return }
+        panValues[index] = max(-1.0, min(1.0, value))
+        updatePan(for: index)
+    }
+    
     func toggleSolo(for index: Int) {
         guard index < soloStates.count else { return }
         soloStates[index].toggle()
@@ -1362,10 +1373,12 @@ class AudioEngine: ObservableObject {
     func resetAllFaders() {
         for i in 0..<componentCount {
             faderValues[i] = 1.0
+            panValues[i] = 0.0
             soloStates[i] = false
             muteStates[i] = false
         }
         updateAllGains()
+        updateAllPans()
     }
     
     func zeroAllFaders() {
@@ -1373,6 +1386,13 @@ class AudioEngine: ObservableObject {
             faderValues[i] = 0.0
         }
         updateAllGains()
+    }
+    
+    func centerAllPans() {
+        for i in 0..<componentCount {
+            panValues[i] = 0.0
+        }
+        updateAllPans()
     }
     
     func setPlaybackRate(_ rate: Float) {
@@ -1410,12 +1430,23 @@ class AudioEngine: ObservableObject {
         playerNodes[index].volume = Float(gain)
     }
     
+    private func updatePan(for index: Int) {
+        guard index < playerNodes.count, index < panValues.count else { return }
+        // AVAudioPlayerNode pan: -1.0 (left) to 1.0 (right)
+        playerNodes[index].pan = Float(panValues[index])
+    }
+    
     private func updateAllGains() {
         for i in 0..<playerNodes.count { updateGain(for: i) }
     }
     
+    private func updateAllPans() {
+        for i in 0..<playerNodes.count { updatePan(for: i) }
+    }
+    
     // MARK: - Timer
     private func startTimer() {
+        stopTimer()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] _ in
             self?.updateTime()
         }
@@ -1424,6 +1455,52 @@ class AudioEngine: ObservableObject {
     private func stopTimer() {
         timer?.invalidate()
         timer = nil
+    }
+    
+    /// Start a timer that decays meters to zero after playback stops
+    private func startMeterDecayTimer() {
+        // Stop any existing timer (e.g. from playback) and start decay timer
+        stopTimer()
+        
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] _ in
+            self?.updateMeterDecay()
+        }
+    }
+    
+    /// Update meter decay when not playing
+    private func updateMeterDecay() {
+        var allZero = true
+        
+        if hasSession {
+            // Decay stem meters
+            for i in 0..<peakLevels.count {
+                peakLevels[i] *= meterDecay
+                if peakLevels[i] < 0.001 {
+                    peakLevels[i] = 0
+                }
+            }
+            for i in 0..<meterLevels.count {
+                meterLevels[i] = peakLevels.indices.contains(i) ? peakLevels[i] : 0
+                if meterLevels[i] > 0.001 {
+                    allZero = false
+                }
+            }
+        } else {
+            // Decay original audio meter
+            originalPeakLevel *= meterDecay
+            if originalPeakLevel < 0.001 {
+                originalPeakLevel = 0
+            }
+            originalMeterLevel = originalPeakLevel
+            if originalMeterLevel > 0.001 {
+                allZero = false
+            }
+        }
+        
+        // Stop timer once all meters have decayed to zero
+        if allZero {
+            stopTimer()
+        }
     }
     
     private func updateTime() {
@@ -1621,6 +1698,7 @@ class AudioEngine: ObservableObject {
         componentCount = 0
         stemNames.removeAll()
         faderValues.removeAll()
+        panValues.removeAll()
         soloStates.removeAll()
         muteStates.removeAll()
         meterLevels.removeAll()

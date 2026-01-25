@@ -9,7 +9,7 @@ struct ContentView: View {
             ToolbarView()
             
             // Main content with optional file browser
-            HStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 0) {
                 // File browser sidebar
                 if audioEngine.showFileBrowser {
                     FileBrowserView()
@@ -1289,38 +1289,17 @@ struct MixerView: View {
                         ChannelStripView(index: index)
                     }
                     
-                    // The last channel (Other) followed by mixer control buttons
+                    // The last channel (Other)
                     if audioEngine.componentCount > 0 {
-                        // The last channel (Other)
                         ChannelStripView(index: audioEngine.componentCount - 1)
-                        
-                        // Mixer control buttons (stacked vertically, to the right of Other)
-                        VStack(spacing: 8) {
-                            Spacer()
-                            
-                            Button(action: { audioEngine.zeroAllFaders() }) {
-                                Text("All 0")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .buttonStyle(SecondaryToolbarButtonStyle())
-                            
-                            Button(action: { audioEngine.resetAllFaders() }) {
-                                Text("Reset")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .buttonStyle(SecondaryToolbarButtonStyle())
-                            
-                            Spacer()
-                        }
-                        .frame(width: 60)
                     }
                 }
                 .padding(.horizontal, 20)
-                .frame(minWidth: 0, maxWidth: .infinity)
             }
             .frame(maxWidth: .infinity)
             .background(Color(hex: "1e1e1e"))
         }
+        .background(Color(hex: "1e1e1e"))
     }
 }
 
@@ -1333,71 +1312,73 @@ struct TimelineView: View {
     @State private var dragStartTime: Double = 0
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Waveform + playhead + region
-            GeometryReader { geometry in
-                let padding: CGFloat = 16
-                let width = geometry.size.width - (padding * 2)
-                let playheadX = audioEngine.duration > 0 
-                    ? padding + width * CGFloat(audioEngine.currentTime / audioEngine.duration)
-                    : padding
+        // Waveform + playhead + region
+        GeometryReader { geometry in
+            let hPadding: CGFloat = 16
+            let width = geometry.size.width - (hPadding * 2)
+            let playheadX = audioEngine.duration > 0 
+                ? hPadding + width * CGFloat(audioEngine.currentTime / audioEngine.duration)
+                : hPadding
+            
+            ZStack {
+                // Background that fills the padded area
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(hex: "1a1a1a"))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color(hex: "2a2a2a"), lineWidth: 1)
+                    )
+                    .frame(width: width, height: geometry.size.height)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                 
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color(hex: "1a1a1a"))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color(hex: "2a2a2a"), lineWidth: 1)
-                        )
+                // Selection/play region
+                if audioEngine.selectionEnd > audioEngine.selectionStart && audioEngine.duration > 0 {
+                    let regionStartRatio = CGFloat(audioEngine.selectionStart / audioEngine.duration)
+                    let regionEndRatio = CGFloat(audioEngine.selectionEnd / audioEngine.duration)
+                    let regionW = width * (regionEndRatio - regionStartRatio)
+                    let regionX = hPadding + width * regionStartRatio + regionW / 2
                     
-                    // Selection/play region
-                    if audioEngine.selectionEnd > audioEngine.selectionStart && audioEngine.duration > 0 {
-                        let regionStartRatio = CGFloat(audioEngine.selectionStart / audioEngine.duration)
-                        let regionEndRatio = CGFloat(audioEngine.selectionEnd / audioEngine.duration)
-                        let regionW = width * (regionEndRatio - regionStartRatio)
-                        let regionX = padding + width * regionStartRatio + regionW / 2
-                        
-                        Rectangle()
-                            .fill(Color(hex: "0a84ff").opacity(0.4))
-                            .frame(width: max(2, regionW))
-                            .position(x: regionX, y: geometry.size.height / 2)
-                    }
-                    
-                    // Waveform
-                    Canvas { context, size in
-                        let centerY = size.height / 2
-                        let samples = audioEngine.waveformSamples
-                        guard samples.count > 1 else { return }
-                        let step = width / CGFloat(samples.count - 1)
-                        
-                        var path = Path()
-                        for i in 0..<samples.count {
-                            let x = padding + CGFloat(i) * step
-                            let amp = CGFloat(samples[i]) * (size.height * 0.45)
-                            path.move(to: CGPoint(x: x, y: centerY - amp))
-                            path.addLine(to: CGPoint(x: x, y: centerY + amp))
-                        }
-                        context.stroke(path, with: .color(Color(hex: "6b6b6b")), lineWidth: 1)
-                    }
-                    
-                    // Playhead
-                    if audioEngine.duration > 0 {
-                        Rectangle()
-                            .fill(Color.white)
-                            .frame(width: 2)
-                            .position(x: playheadX, y: geometry.size.height / 2)
-                    }
+                    Rectangle()
+                        .fill(Color(hex: "0a84ff").opacity(0.4))
+                        .frame(width: max(2, regionW))
+                        .position(x: regionX, y: geometry.size.height / 2)
                 }
-                .contentShape(Rectangle())
+                
+                // Waveform
+                Canvas { context, size in
+                    let centerY = size.height / 2
+                    let samples = audioEngine.waveformSamples
+                    guard samples.count > 1 else { return }
+                    let step = width / CGFloat(samples.count - 1)
+                    
+                    var path = Path()
+                    for i in 0..<samples.count {
+                        let x = hPadding + CGFloat(i) * step
+                        let amp = CGFloat(samples[i]) * (size.height * 0.45)
+                        path.move(to: CGPoint(x: x, y: centerY - amp))
+                        path.addLine(to: CGPoint(x: x, y: centerY + amp))
+                    }
+                    context.stroke(path, with: .color(Color(hex: "6b6b6b")), lineWidth: 1)
+                }
+                
+                // Playhead
+                if audioEngine.duration > 0 {
+                    Rectangle()
+                        .fill(Color.white)
+                        .frame(width: 2)
+                        .position(x: playheadX, y: geometry.size.height / 2)
+                }
+            }
+            .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .local)
                         .onChanged { value in
                             guard audioEngine.duration > 0 else { return }
                             
-                            let startX = min(max(value.startLocation.x, padding), padding + width)
-                            let currentX = min(max(value.location.x, padding), padding + width)
-                            let clickTime = Double((startX - padding) / width) * audioEngine.duration
-                            let currentTime = Double((currentX - padding) / width) * audioEngine.duration
+                            let startX = min(max(value.startLocation.x, hPadding), hPadding + width)
+                            let currentX = min(max(value.location.x, hPadding), hPadding + width)
+                            let clickTime = Double((startX - hPadding) / width) * audioEngine.duration
+                            let currentTime = Double((currentX - hPadding) / width) * audioEngine.duration
                             
                             // Determine drag mode on first movement
                             if !isDragging {
@@ -1441,10 +1422,10 @@ struct TimelineView: View {
                         .onEnded { value in
                             guard audioEngine.duration > 0 else { return }
                             
-                            let startX = min(max(value.startLocation.x, padding), padding + width)
-                            let endX = min(max(value.location.x, padding), padding + width)
+                            let startX = min(max(value.startLocation.x, hPadding), hPadding + width)
+                            let endX = min(max(value.location.x, hPadding), hPadding + width)
                             let dragDistance = abs(endX - startX)
-                            let clickTime = Double((endX - padding) / width) * audioEngine.duration
+                            let clickTime = Double((endX - hPadding) / width) * audioEngine.duration
                             
                             // If it was just a click (minimal drag), move playhead
                             if dragDistance < 3 {
@@ -1464,12 +1445,9 @@ struct TimelineView: View {
                             regionDragOffset = 0
                         }
                 )
-            }
-            .frame(height: 56)
-            .padding(.horizontal, 16)
         }
-        .padding(.vertical, 8)
-        .background(Color(hex: "111111"))
+        .frame(height: 56)
+        .background(Color(hex: "1e1e1e"))
         .overlay(
             Rectangle()
                 .frame(height: 1)
@@ -1533,7 +1511,7 @@ struct ChannelStripView: View {
     }
     
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             // Header
             VStack(spacing: 2) {
                 Image(systemName: stemIcon)
@@ -1557,6 +1535,14 @@ struct ChannelStripView: View {
                     .minimumScaleFactor(0.7)
             }
             .padding(.top, 8)
+            
+            // Pan Knob
+            PanKnobView(
+                value: Binding(
+                    get: { index < audioEngine.panValues.count ? audioEngine.panValues[index] : 0.0 },
+                    set: { audioEngine.setPanValue($0, for: index) }
+                )
+            )
             
             // Meter
             MeterView(level: index < audioEngine.meterLevels.count ? audioEngine.meterLevels[index] : 0)
@@ -1599,7 +1585,7 @@ struct ChannelStripView: View {
                     action: { audioEngine.toggleMute(for: index) }
                 )
             }
-            .padding(.bottom, 12)
+            .padding(.bottom, 10)
         }
         .frame(width: 80)
         .background(
@@ -1652,9 +1638,118 @@ struct MeterView: View {
                         )
                     )
                     .frame(height: geometry.size.height * CGFloat(level))
+                    .animation(.easeOut(duration: 0.08), value: level)
             }
         }
-        .frame(width: 8, height: 120)
+        .frame(width: 8, height: 100)
+    }
+}
+
+// MARK: - Pan Knob
+struct PanKnobView: View {
+    @Binding var value: Double  // -1.0 (left) to 1.0 (right)
+    @State private var isDragging = false
+    
+    private let knobSize: CGFloat = 32
+    
+    // Convert value (-1 to 1) to angle (-135 to 135 degrees)
+    private var angle: Double {
+        value * 135
+    }
+    
+    var body: some View {
+        VStack(spacing: 2) {
+            // L/R labels
+            HStack {
+                Text("L")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundColor(value < -0.3 ? Color(hex: "0a84ff") : Color(hex: "555555"))
+                Spacer()
+                Text("R")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundColor(value > 0.3 ? Color(hex: "0a84ff") : Color(hex: "555555"))
+            }
+            .frame(width: knobSize + 8)
+            
+            // Knob
+            ZStack {
+                // Outer ring / track
+                Circle()
+                    .fill(Color(hex: "1a1a1a"))
+                    .frame(width: knobSize, height: knobSize)
+                    .overlay(
+                        Circle()
+                            .stroke(Color(hex: "444444"), lineWidth: 2)
+                    )
+                
+                // Indicator arc showing position
+                Circle()
+                    .trim(from: 0, to: 0.75)
+                    .stroke(
+                        Color(hex: "333333"),
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                    )
+                    .frame(width: knobSize - 6, height: knobSize - 6)
+                    .rotationEffect(.degrees(135))
+                
+                // Active indicator
+                if abs(value) > 0.05 {
+                    Circle()
+                        .trim(from: 0.375, to: 0.375 + (value * 0.375))
+                        .stroke(
+                            Color(hex: "0a84ff"),
+                            style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                        )
+                        .frame(width: knobSize - 6, height: knobSize - 6)
+                        .rotationEffect(.degrees(135))
+                }
+                
+                // Knob cap
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(hex: "5a5a5a"), Color(hex: "3a3a3a")],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .frame(width: knobSize - 10, height: knobSize - 10)
+                    .overlay(
+                        Circle()
+                            .stroke(Color(hex: "2a2a2a"), lineWidth: 1)
+                    )
+                
+                // Position indicator line
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2, height: 6)
+                    .offset(y: -7)
+                    .rotationEffect(.degrees(angle))
+            }
+            .frame(width: knobSize, height: knobSize)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        isDragging = true
+                        // Horizontal drag changes pan
+                        let delta = gesture.translation.width / 50
+                        let newValue = max(-1, min(1, value + delta))
+                        value = newValue
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                    }
+            )
+            .simultaneousGesture(
+                TapGesture(count: 2)
+                    .onEnded {
+                        // Double-tap to center
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            value = 0
+                        }
+                    }
+            )
+        }
     }
 }
 
@@ -1710,7 +1805,7 @@ struct FaderView: View {
                     }
             )
         }
-        .frame(width: 36, height: 140)
+        .frame(width: 36, height: 120)
     }
 }
 
