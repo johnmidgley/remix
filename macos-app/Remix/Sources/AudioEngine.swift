@@ -320,8 +320,16 @@ class AudioEngine: ObservableObject {
     private var originalMeterNode: AVAudioMixerNode?
     
     // Demucs stem order
-    static let demucsStems = ["drums", "bass", "vocals", "guitar", "piano", "other"]
-    static let demucsDisplayNames = ["Drums", "Bass", "Vocals", "Guitar", "Keys", "Other"]
+    static let demucsStems = ["drums", "bass", "guitar", "piano", "vocals", "other"]
+    static let demucsDisplayNames = ["Drums", "Bass", "Guitar", "Keys", "Voice", "Other"]
+    
+    // Map legacy display names to current ones (for cache compatibility)
+    static let displayNameAliases: [String: String] = ["Vocals": "Voice"]
+    
+    /// Normalize a display name (handles legacy names from cache)
+    static func normalizeDisplayName(_ name: String) -> String {
+        return displayNameAliases[name] ?? name
+    }
     
     // Demucs model handle (loaded once on first use)
     private var demucsModel: OpaquePointer?
@@ -436,8 +444,13 @@ class AudioEngine: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
-            // Convert to expected format
-            let loadedStems = stems.map { (name: $0.name, displayName: $0.name, url: $0.url) }
+            // Convert to expected format, normalize names, and sort by display name order
+            var loadedStems = stems.map { (name: $0.name, displayName: Self.normalizeDisplayName($0.name), url: $0.url) }
+            loadedStems.sort { stem1, stem2 in
+                let idx1 = Self.demucsDisplayNames.firstIndex(of: stem1.displayName) ?? Int.max
+                let idx2 = Self.demucsDisplayNames.firstIndex(of: stem2.displayName) ?? Int.max
+                return idx1 < idx2
+            }
             
             // Load buffers
             var buffers: [AVAudioPCMBuffer] = []
@@ -503,8 +516,13 @@ class AudioEngine: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
-            // Convert to expected format
-            let loadedStems = stems.map { (name: $0.name, displayName: $0.name, url: $0.url) }
+            // Convert to expected format, normalize names, and sort by display name order
+            var loadedStems = stems.map { (name: $0.name, displayName: Self.normalizeDisplayName($0.name), url: $0.url) }
+            loadedStems.sort { stem1, stem2 in
+                let idx1 = Self.demucsDisplayNames.firstIndex(of: stem1.displayName) ?? Int.max
+                let idx2 = Self.demucsDisplayNames.firstIndex(of: stem2.displayName) ?? Int.max
+                return idx1 < idx2
+            }
             
             // Load buffers
             var buffers: [AVAudioPCMBuffer] = []

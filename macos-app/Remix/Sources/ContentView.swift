@@ -44,7 +44,7 @@ struct FileBrowserView: View {
     @State private var directoryContents: [FileItem] = []
     @State private var selectedFile: URL?
     @State private var quickAccessLocations: [QuickAccessItem] = []
-    @State private var isShowingCache: Bool = false
+    @State private var isShowingCache: Bool = true
     @State private var cachedItems: [CachedFileItem] = []
     
     struct FileItem: Identifiable, Hashable {
@@ -155,14 +155,6 @@ struct FileBrowserView: View {
                             .font(.system(size: 10))
                             .foregroundColor(Color(hex: "666666"))
                         Spacer()
-                        if !cachedItems.isEmpty {
-                            Button(action: clearAllCache) {
-                                Text("Clear All")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(Color(hex: "ff453a"))
-                            }
-                            .buttonStyle(.plain)
-                        }
                     }
                     .padding(.horizontal, 12)
                     .frame(height: 20)
@@ -239,7 +231,11 @@ struct FileBrowserView: View {
         }
         .onAppear {
             loadQuickAccessLocations()
-            loadDirectory()
+            if isShowingCache {
+                loadCachedFiles()
+            } else {
+                loadDirectory()
+            }
         }
         .onChange(of: audioEngine.currentDirectory) { _ in
             if !isShowingCache {
@@ -1004,14 +1000,6 @@ struct DropZoneView: View {
                     .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
                         handleDrop(providers: providers)
                     }
-                    
-                    // Info text
-                    Text("Separates into: Drums, Bass, Vocals, Guitar, Keys, Other\nRequires Python & ~4GB download on first run")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color(hex: "666666"))
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 350)
-                        .padding(.top, 8)
                 }
             }
             
@@ -1257,8 +1245,34 @@ struct MixerView: View {
             // Channel strips - centered with spacing
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
-                    ForEach(0..<audioEngine.componentCount, id: \.self) { index in
+                    // All channels except the last one (Other)
+                    ForEach(0..<max(0, audioEngine.componentCount - 1), id: \.self) { index in
                         ChannelStripView(index: index)
+                    }
+                    
+                    // Mixer control buttons (stacked vertically, to the left of Other)
+                    if audioEngine.componentCount > 0 {
+                        VStack(spacing: 8) {
+                            Spacer()
+                            
+                            Button(action: { audioEngine.zeroAllFaders() }) {
+                                Text("All 0")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .buttonStyle(SecondaryToolbarButtonStyle())
+                            
+                            Button(action: { audioEngine.resetAllFaders() }) {
+                                Text("Reset")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .buttonStyle(SecondaryToolbarButtonStyle())
+                            
+                            Spacer()
+                        }
+                        .frame(width: 60)
+                        
+                        // The last channel (Other)
+                        ChannelStripView(index: audioEngine.componentCount - 1)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -1266,34 +1280,6 @@ struct MixerView: View {
             }
             .frame(maxWidth: .infinity)
             .background(Color(hex: "1e1e1e"))
-            
-            // Mixer controls bar
-            HStack {
-                Spacer()
-                
-                HStack(spacing: 12) {
-                    Button(action: { audioEngine.zeroAllFaders() }) {
-                        Text("All 0")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .buttonStyle(SecondaryToolbarButtonStyle())
-                    
-                    Button(action: { audioEngine.resetAllFaders() }) {
-                        Text("Reset")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .buttonStyle(SecondaryToolbarButtonStyle())
-                }
-                .padding(.trailing, 20)
-            }
-            .frame(height: 40)
-            .background(Color(hex: "191919"))
-            .overlay(
-                Rectangle()
-                    .frame(height: 1)
-                    .foregroundColor(Color(hex: "333333")),
-                alignment: .top
-            )
         }
     }
 }
@@ -1433,10 +1419,10 @@ struct ChannelStripView: View {
     var stemIcon: String {
         switch stemName.lowercased() {
         case "drums":
-            return "oval.fill"
+            return "circle.fill"
         case "bass":
             return "guitars"
-        case "vocals":
+        case "vocals", "voice":
             return "mic"
         case "guitar":
             return "guitars"
