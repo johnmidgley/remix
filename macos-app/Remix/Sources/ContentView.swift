@@ -481,7 +481,7 @@ struct TransportView: View {
         HStack(spacing: 16) {
             // Transport buttons
             HStack(spacing: 2) {
-                TransportButton(icon: "stop.fill", action: { audioEngine.stop() })
+                TransportButton(icon: "stop.fill", action: { audioEngine.stopAndReset() })
                 TransportButton(
                     icon: audioEngine.isPlaying ? "pause.fill" : "play.fill",
                     isActive: audioEngine.isPlaying,
@@ -1062,16 +1062,22 @@ struct PreAnalysisView: View {
 // MARK: - Pre-Analysis Timeline (simplified timeline for preview)
 struct PreAnalysisTimelineView: View {
     @EnvironmentObject var audioEngine: AudioEngine
-    @State private var dragStartX: CGFloat? = nil
+    @State private var isDragging: Bool = false
+    @State private var dragMode: Int = 0 // 0=none, 1=creating, 2=moving
+    @State private var regionDragOffset: Double = 0
+    @State private var dragStartTime: Double = 0
     
     var body: some View {
         VStack(spacing: 0) {
-            // Waveform + selection
+            // Waveform + playhead + region
             GeometryReader { geometry in
                 let padding: CGFloat = 16
                 let width = geometry.size.width - (padding * 2)
+                let playheadX = audioEngine.duration > 0 
+                    ? padding + width * CGFloat(audioEngine.currentTime / audioEngine.duration)
+                    : padding
                 
-                ZStack(alignment: .leading) {
+                ZStack {
                     RoundedRectangle(cornerRadius: 6)
                         .fill(Color(hex: "1a1a1a"))
                         .overlay(
@@ -1079,15 +1085,17 @@ struct PreAnalysisTimelineView: View {
                                 .stroke(Color(hex: "2a2a2a"), lineWidth: 1)
                         )
                     
-                    // Selection region
-                    if audioEngine.selectionEnd > audioEngine.selectionStart, audioEngine.duration > 0 {
-                        let startX = padding + width * CGFloat(audioEngine.selectionStart / audioEngine.duration)
-                        let endX = padding + width * CGFloat(audioEngine.selectionEnd / audioEngine.duration)
+                    // Selection/play region
+                    if audioEngine.selectionEnd > audioEngine.selectionStart && audioEngine.duration > 0 {
+                        let regionStartRatio = CGFloat(audioEngine.selectionStart / audioEngine.duration)
+                        let regionEndRatio = CGFloat(audioEngine.selectionEnd / audioEngine.duration)
+                        let regionW = width * (regionEndRatio - regionStartRatio)
+                        let regionX = padding + width * regionStartRatio + regionW / 2
+                        
                         Rectangle()
-                            .fill(Color(hex: "0a84ff").opacity(0.18))
-                            .frame(width: max(2, endX - startX))
-                            .offset(x: startX - padding)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .fill(Color(hex: "0a84ff").opacity(0.4))
+                            .frame(width: max(2, regionW))
+                            .position(x: regionX, y: geometry.size.height / 2)
                     }
                     
                     // Waveform
@@ -1109,12 +1117,10 @@ struct PreAnalysisTimelineView: View {
                     
                     // Playhead
                     if audioEngine.duration > 0 {
-                        let playheadX = padding + width * CGFloat(audioEngine.currentTime / audioEngine.duration)
                         Rectangle()
-                            .fill(Color(hex: "30d158"))
+                            .fill(Color.white)
                             .frame(width: 2)
-                            .offset(x: playheadX - padding)
-                            .shadow(color: Color(hex: "30d158").opacity(0.6), radius: 2)
+                            .position(x: playheadX, y: geometry.size.height / 2)
                     }
                 }
                 .contentShape(Rectangle())
@@ -1122,45 +1128,80 @@ struct PreAnalysisTimelineView: View {
                     DragGesture(minimumDistance: 0, coordinateSpace: .local)
                         .onChanged { value in
                             guard audioEngine.duration > 0 else { return }
+                            
                             let startX = min(max(value.startLocation.x, padding), padding + width)
                             let currentX = min(max(value.location.x, padding), padding + width)
-                            dragStartX = startX
+                            let clickTime = Double((startX - padding) / width) * audioEngine.duration
+                            let currentTime = Double((currentX - padding) / width) * audioEngine.duration
                             
-                            let selStartX = min(startX, currentX)
-                            let selEndX = max(startX, currentX)
-                            let startTime = (selStartX - padding) / width * CGFloat(audioEngine.duration)
-                            let endTime = (selEndX - padding) / width * CGFloat(audioEngine.duration)
-                            audioEngine.setSelection(start: Double(startTime), end: Double(endTime))
+                            // Determine drag mode on first movement
+                            if !isDragging {
+                                isDragging = true
+                                dragStartTime = clickTime
+                                
+                                // Check if click is inside existing region
+                                let hasRegion = audioEngine.selectionEnd > audioEngine.selectionStart
+                                if hasRegion && clickTime >= audioEngine.selectionStart && clickTime <= audioEngine.selectionEnd {
+                                    dragMode = 2 // moving
+                                    regionDragOffset = clickTime - audioEngine.selectionStart
+                                } else {
+                                    dragMode = 1 // creating
+                                }
+                            }
+                            
+                            if dragMode == 1 {
+                                // Create/resize selection from drag start to current position
+                                let selStart = min(dragStartTime, currentTime)
+                                let selEnd = max(dragStartTime, currentTime)
+                                audioEngine.setSelection(start: selStart, end: selEnd)
+                            } else if dragMode == 2 {
+                                // Move the region
+                                let regionWidth = audioEngine.selectionEnd - audioEngine.selectionStart
+                                var newStart = currentTime - regionDragOffset
+                                var newEnd = newStart + regionWidth
+                                
+                                // Clamp to bounds
+                                if newStart < 0 {
+                                    newStart = 0
+                                    newEnd = regionWidth
+                                }
+                                if newEnd > audioEngine.duration {
+                                    newEnd = audioEngine.duration
+                                    newStart = audioEngine.duration - regionWidth
+                                }
+                                
+                                audioEngine.setSelection(start: newStart, end: newEnd)
+                            }
                         }
                         .onEnded { value in
                             guard audioEngine.duration > 0 else { return }
+                            
                             let startX = min(max(value.startLocation.x, padding), padding + width)
                             let endX = min(max(value.location.x, padding), padding + width)
-                            let dx = abs(startX - endX)
+                            let dragDistance = abs(endX - startX)
+                            let clickTime = Double((endX - padding) / width) * audioEngine.duration
                             
-                            if dx < 3 {
-                                // Treat as seek
-                                let time = (endX - padding) / width * CGFloat(audioEngine.duration)
-                                audioEngine.seek(to: Double(time))
+                            // If it was just a click (minimal drag), move playhead
+                            if dragDistance < 3 {
+                                // Check if clicked inside region
+                                let hasRegion = audioEngine.selectionEnd > audioEngine.selectionStart
+                                let clickedInRegion = hasRegion && clickTime >= audioEngine.selectionStart && clickTime <= audioEngine.selectionEnd
+                                
+                                if !clickedInRegion {
+                                    audioEngine.clearSelection()
+                                }
+                                
+                                audioEngine.seek(to: clickTime)
                             }
-                            dragStartX = nil
+                            
+                            isDragging = false
+                            dragMode = 0
+                            regionDragOffset = 0
                         }
                 )
             }
             .frame(height: 80)
             .padding(.horizontal, 16)
-            
-            // Selection controls
-            HStack {
-                if audioEngine.selectionEnd > audioEngine.selectionStart {
-                    Button("Clear Loop") { audioEngine.clearSelection() }
-                        .font(.system(size: 11, weight: .medium))
-                        .buttonStyle(ToolbarButtonStyle())
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
         }
         .padding(.vertical, 12)
         .background(Color(hex: "111111"))
@@ -1229,16 +1270,22 @@ struct MixerView: View {
 // MARK: - Timeline
 struct TimelineView: View {
     @EnvironmentObject var audioEngine: AudioEngine
-    @State private var dragStartX: CGFloat? = nil
+    @State private var isDragging: Bool = false
+    @State private var dragMode: Int = 0 // 0=none, 1=creating, 2=moving
+    @State private var regionDragOffset: Double = 0
+    @State private var dragStartTime: Double = 0
     
     var body: some View {
         VStack(spacing: 0) {
-            // Waveform + selection
+            // Waveform + playhead + region
             GeometryReader { geometry in
                 let padding: CGFloat = 16
                 let width = geometry.size.width - (padding * 2)
+                let playheadX = audioEngine.duration > 0 
+                    ? padding + width * CGFloat(audioEngine.currentTime / audioEngine.duration)
+                    : padding
                 
-                ZStack(alignment: .leading) {
+                ZStack {
                     RoundedRectangle(cornerRadius: 6)
                         .fill(Color(hex: "1a1a1a"))
                         .overlay(
@@ -1246,15 +1293,17 @@ struct TimelineView: View {
                                 .stroke(Color(hex: "2a2a2a"), lineWidth: 1)
                         )
                     
-                    // Selection region
-                    if audioEngine.selectionEnd > audioEngine.selectionStart, audioEngine.duration > 0 {
-                        let startX = padding + width * CGFloat(audioEngine.selectionStart / audioEngine.duration)
-                        let endX = padding + width * CGFloat(audioEngine.selectionEnd / audioEngine.duration)
+                    // Selection/play region
+                    if audioEngine.selectionEnd > audioEngine.selectionStart && audioEngine.duration > 0 {
+                        let regionStartRatio = CGFloat(audioEngine.selectionStart / audioEngine.duration)
+                        let regionEndRatio = CGFloat(audioEngine.selectionEnd / audioEngine.duration)
+                        let regionW = width * (regionEndRatio - regionStartRatio)
+                        let regionX = padding + width * regionStartRatio + regionW / 2
+                        
                         Rectangle()
-                            .fill(Color(hex: "0a84ff").opacity(0.18))
-                            .frame(width: max(2, endX - startX))
-                            .offset(x: startX - padding)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .fill(Color(hex: "0a84ff").opacity(0.4))
+                            .frame(width: max(2, regionW))
+                            .position(x: regionX, y: geometry.size.height / 2)
                     }
                     
                     // Waveform
@@ -1276,12 +1325,10 @@ struct TimelineView: View {
                     
                     // Playhead
                     if audioEngine.duration > 0 {
-                        let playheadX = padding + width * CGFloat(audioEngine.currentTime / audioEngine.duration)
                         Rectangle()
-                            .fill(Color(hex: "30d158"))
+                            .fill(Color.white)
                             .frame(width: 2)
-                            .offset(x: playheadX - padding)
-                            .shadow(color: Color(hex: "30d158").opacity(0.6), radius: 2)
+                            .position(x: playheadX, y: geometry.size.height / 2)
                     }
                 }
                 .contentShape(Rectangle())
@@ -1289,45 +1336,80 @@ struct TimelineView: View {
                     DragGesture(minimumDistance: 0, coordinateSpace: .local)
                         .onChanged { value in
                             guard audioEngine.duration > 0 else { return }
+                            
                             let startX = min(max(value.startLocation.x, padding), padding + width)
                             let currentX = min(max(value.location.x, padding), padding + width)
-                            dragStartX = startX
+                            let clickTime = Double((startX - padding) / width) * audioEngine.duration
+                            let currentTime = Double((currentX - padding) / width) * audioEngine.duration
                             
-                            let selStartX = min(startX, currentX)
-                            let selEndX = max(startX, currentX)
-                            let startTime = (selStartX - padding) / width * CGFloat(audioEngine.duration)
-                            let endTime = (selEndX - padding) / width * CGFloat(audioEngine.duration)
-                            audioEngine.setSelection(start: Double(startTime), end: Double(endTime))
+                            // Determine drag mode on first movement
+                            if !isDragging {
+                                isDragging = true
+                                dragStartTime = clickTime
+                                
+                                // Check if click is inside existing region
+                                let hasRegion = audioEngine.selectionEnd > audioEngine.selectionStart
+                                if hasRegion && clickTime >= audioEngine.selectionStart && clickTime <= audioEngine.selectionEnd {
+                                    dragMode = 2 // moving
+                                    regionDragOffset = clickTime - audioEngine.selectionStart
+                                } else {
+                                    dragMode = 1 // creating
+                                }
+                            }
+                            
+                            if dragMode == 1 {
+                                // Create/resize selection from drag start to current position
+                                let selStart = min(dragStartTime, currentTime)
+                                let selEnd = max(dragStartTime, currentTime)
+                                audioEngine.setSelection(start: selStart, end: selEnd)
+                            } else if dragMode == 2 {
+                                // Move the region
+                                let regionWidth = audioEngine.selectionEnd - audioEngine.selectionStart
+                                var newStart = currentTime - regionDragOffset
+                                var newEnd = newStart + regionWidth
+                                
+                                // Clamp to bounds
+                                if newStart < 0 {
+                                    newStart = 0
+                                    newEnd = regionWidth
+                                }
+                                if newEnd > audioEngine.duration {
+                                    newEnd = audioEngine.duration
+                                    newStart = audioEngine.duration - regionWidth
+                                }
+                                
+                                audioEngine.setSelection(start: newStart, end: newEnd)
+                            }
                         }
                         .onEnded { value in
                             guard audioEngine.duration > 0 else { return }
+                            
                             let startX = min(max(value.startLocation.x, padding), padding + width)
                             let endX = min(max(value.location.x, padding), padding + width)
-                            let dx = abs(startX - endX)
+                            let dragDistance = abs(endX - startX)
+                            let clickTime = Double((endX - padding) / width) * audioEngine.duration
                             
-                            if dx < 3 {
-                                // Treat as seek
-                                let time = (endX - padding) / width * CGFloat(audioEngine.duration)
-                                audioEngine.seek(to: Double(time))
+                            // If it was just a click (minimal drag), move playhead
+                            if dragDistance < 3 {
+                                // Check if clicked inside region
+                                let hasRegion = audioEngine.selectionEnd > audioEngine.selectionStart
+                                let clickedInRegion = hasRegion && clickTime >= audioEngine.selectionStart && clickTime <= audioEngine.selectionEnd
+                                
+                                if !clickedInRegion {
+                                    audioEngine.clearSelection()
+                                }
+                                
+                                audioEngine.seek(to: clickTime)
                             }
-                            dragStartX = nil
+                            
+                            isDragging = false
+                            dragMode = 0
+                            regionDragOffset = 0
                         }
                 )
             }
             .frame(height: 56)
             .padding(.horizontal, 16)
-            
-            // Selection controls
-            HStack {
-                if audioEngine.selectionEnd > audioEngine.selectionStart {
-                    Button("Clear Loop") { audioEngine.clearSelection() }
-                        .font(.system(size: 11, weight: .medium))
-                        .buttonStyle(ToolbarButtonStyle())
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
         }
         .padding(.vertical, 8)
         .background(Color(hex: "111111"))
@@ -1338,11 +1420,27 @@ struct TimelineView: View {
             alignment: .bottom
         )
     }
+}
+
+// Playhead indicator view
+struct PlayheadView: View {
+    let isDragging: Bool
     
-    func progressWidth(in totalWidth: CGFloat) -> CGFloat {
-        guard audioEngine.duration > 0 else { return 0 }
-        let progress = audioEngine.currentTime / audioEngine.duration
-        return CGFloat(progress) * (totalWidth - 32)
+    var body: some View {
+        VStack(spacing: 0) {
+            // Handle at top
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color(hex: "30d158"))
+                .frame(width: isDragging ? 12 : 8, height: 8)
+                .shadow(color: Color(hex: "30d158").opacity(0.6), radius: isDragging ? 4 : 2)
+            
+            // Line
+            Rectangle()
+                .fill(Color(hex: "30d158"))
+                .frame(width: 2)
+                .shadow(color: Color(hex: "30d158").opacity(0.6), radius: 2)
+        }
+        .animation(.easeOut(duration: 0.1), value: isDragging)
     }
 }
 

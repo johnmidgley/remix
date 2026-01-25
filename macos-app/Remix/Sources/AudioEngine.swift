@@ -1401,16 +1401,36 @@ class AudioEngine: ObservableObject {
         guard !audioBuffers.isEmpty else { return }
         if isPlaying { return }
         
-        let hasSelection = selectionEnd > selectionStart
-        let selectionRange = hasSelection ? selectionFrameRange() : nil
+        let totalFrames = audioBuffers.first.map { Int($0.frameLength) } ?? 0
+        let hasRegion = selectionEnd > selectionStart
         
-        if hasSelection {
-            let start = selectionStart
-            if pauseTime < start || pauseTime > selectionEnd {
-                pauseTime = start
-                currentTime = start
+        // If there's a region and pauseTime is outside it, jump to region start
+        if hasRegion {
+            if pauseTime < selectionStart || pauseTime >= selectionEnd {
+                pauseTime = selectionStart
+                currentTime = selectionStart
             }
         }
+        
+        // Calculate frame range to play
+        let startFrame: Int
+        let length: Int
+        
+        if hasRegion {
+            // Play from current position to end of region (will loop back to region start)
+            let regionStartFrame = Int(Double(totalFrames) * (selectionStart / duration))
+            let regionEndFrame = Int(Double(totalFrames) * (selectionEnd / duration))
+            let currentFrame = Int(Double(totalFrames) * (pauseTime / duration))
+            startFrame = max(regionStartFrame, min(regionEndFrame, currentFrame))
+            length = regionEndFrame - startFrame
+        } else {
+            // Play from current position to end
+            startFrame = duration > 0 ? Int(Double(totalFrames) * (pauseTime / duration)) : 0
+            length = totalFrames - startFrame
+        }
+        
+        let clampedStartFrame = max(0, min(totalFrames, startFrame))
+        let clampedLength = max(0, min(totalFrames - clampedStartFrame, length))
         
         for (i, player) in playerNodes.enumerated() {
             guard i < audioBuffers.count else { continue }
@@ -1418,14 +1438,14 @@ class AudioEngine: ObservableObject {
             
             player.stop()
             
-            if let range = selectionRange {
-                if let sliced = sliceBuffer(buffer, start: range.start, length: range.length) {
-                    player.scheduleBuffer(sliced, at: nil, options: isLooping ? .loops : [])
+            if clampedLength > 0 {
+                if let sliced = sliceBuffer(buffer, start: clampedStartFrame, length: clampedLength) {
+                    player.scheduleBuffer(sliced, at: nil, options: [])
                 } else {
-                    player.scheduleBuffer(buffer, at: nil, options: isLooping ? .loops : [])
+                    player.scheduleBuffer(buffer, at: nil, options: [])
                 }
             } else {
-                player.scheduleBuffer(buffer, at: nil, options: isLooping ? .loops : [])
+                player.scheduleBuffer(buffer, at: nil, options: [])
             }
             
             updateGain(for: i)
@@ -1441,27 +1461,45 @@ class AudioEngine: ObservableObject {
         guard let buffer = originalAudioBuffer, let player = originalPlayerNode else { return }
         if isPlaying { return }
         
-        let hasSelection = selectionEnd > selectionStart
+        let totalFrames = Int(buffer.frameLength)
+        let hasRegion = selectionEnd > selectionStart
         
-        if hasSelection {
-            let start = selectionStart
-            if pauseTime < start || pauseTime > selectionEnd {
-                pauseTime = start
-                currentTime = start
+        // If there's a region and pauseTime is outside it, jump to region start
+        if hasRegion {
+            if pauseTime < selectionStart || pauseTime >= selectionEnd {
+                pauseTime = selectionStart
+                currentTime = selectionStart
             }
         }
         
+        // Calculate frame range to play
+        let startFrame: Int
+        let length: Int
+        
+        if hasRegion {
+            let regionStartFrame = Int(Double(totalFrames) * (selectionStart / duration))
+            let regionEndFrame = Int(Double(totalFrames) * (selectionEnd / duration))
+            let currentFrame = Int(Double(totalFrames) * (pauseTime / duration))
+            startFrame = max(regionStartFrame, min(regionEndFrame, currentFrame))
+            length = regionEndFrame - startFrame
+        } else {
+            startFrame = duration > 0 ? Int(Double(totalFrames) * (pauseTime / duration)) : 0
+            length = totalFrames - startFrame
+        }
+        
+        let clampedStartFrame = max(0, min(totalFrames, startFrame))
+        let clampedLength = max(0, min(totalFrames - clampedStartFrame, length))
+        
         player.stop()
         
-        if hasSelection {
-            let range = selectionFrameRangeForOriginal()
-            if let sliced = sliceBuffer(buffer, start: range.start, length: range.length) {
-                player.scheduleBuffer(sliced, at: nil, options: isLooping ? .loops : [])
+        if clampedLength > 0 {
+            if let sliced = sliceBuffer(buffer, start: clampedStartFrame, length: clampedLength) {
+                player.scheduleBuffer(sliced, at: nil, options: [])
             } else {
-                player.scheduleBuffer(buffer, at: nil, options: isLooping ? .loops : [])
+                player.scheduleBuffer(buffer, at: nil, options: [])
             }
         } else {
-            player.scheduleBuffer(buffer, at: nil, options: isLooping ? .loops : [])
+            player.scheduleBuffer(buffer, at: nil, options: [])
         }
         
         player.play()
@@ -1507,9 +1545,13 @@ class AudioEngine: ObservableObject {
         }
         
         isPlaying = false
+        stopTimer()
+    }
+    
+    func stopAndReset() {
+        stop()
         pauseTime = 0
         currentTime = 0
-        stopTimer()
     }
     
     func seek(to time: Double) {
@@ -1609,16 +1651,27 @@ class AudioEngine: ObservableObject {
     private func updateTime() {
         guard isPlaying else { return }
         
-        var time = CACurrentMediaTime() - startTime
-        if selectionEnd > selectionStart {
-            let loopLength = selectionEnd - selectionStart
-            if isLooping && loopLength > 0 {
-                let relative = (time - selectionStart).truncatingRemainder(dividingBy: loopLength)
-                time = selectionStart + max(0, relative)
+        let time = CACurrentMediaTime() - startTime
+        let hasRegion = selectionEnd > selectionStart
+        
+        // Check if we've reached the end of region/track
+        if hasRegion {
+            if time >= selectionEnd {
+                // Region playback - loop back to start of region
+                restartFromPosition(selectionStart)
+                return
             }
-        } else if isLooping && duration > 0 {
-            time = time.truncatingRemainder(dividingBy: duration)
+        } else if time >= duration {
+            if isLooping {
+                // Full track looping
+                restartFromPosition(0)
+                return
+            } else {
+                stopAndReset()
+                return
+            }
         }
+        
         currentTime = min(time, duration)
         
         // Update meters from real audio levels
@@ -1635,12 +1688,21 @@ class AudioEngine: ObservableObject {
             // Pre-analysis mode: update original meter level
             originalMeterLevel = originalPeakLevel
         }
-        
-        if selectionEnd > selectionStart {
-            if !isLooping && currentTime >= selectionEnd { stop() }
-        } else if !isLooping && currentTime >= duration {
-            stop()
+    }
+    
+    private func restartFromPosition(_ position: Double) {
+        // Stop current playback without resetting state
+        if hasSession {
+            for player in playerNodes { player.stop() }
+        } else {
+            originalPlayerNode?.stop()
         }
+        isPlaying = false
+        
+        // Set new position and restart
+        pauseTime = position
+        currentTime = position
+        play()
     }
     
     // MARK: - Bounce/Export

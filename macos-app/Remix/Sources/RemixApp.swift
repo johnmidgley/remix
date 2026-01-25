@@ -57,7 +57,7 @@ struct RemixApp: App {
                 .disabled(!audioEngine.hasSession)
                 
                 Button("Stop") {
-                    audioEngine.stop()
+                    audioEngine.stopAndReset()
                 }
                 .keyboardShortcut(.return, modifiers: [])
                 .disabled(!audioEngine.hasSession)
