@@ -2,36 +2,14 @@
 name = "music-tool"
 version = "0.1.0"
 edition = "2021"
-description = "Split audio files into principal component audio files"
+description = "Audio stem separation tool"
 
 [lib]
 name = "music_tool"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-[[bin]]
-name = "music-tool"
-path = "src/main.rs"
-
 [dependencies]
 hound = "3.5"              # WAV file I/O
-rustfft = "6.2"            # FFT for STFT
 symphonia = { version = "0.5", features = ["mp3", "wav", "pcm"] }  # Audio decoding
-ndarray = "0.15"           # N-dimensional arrays
-ndarray-linalg = { version = "0.16", features = ["openblas-static"] }  # Linear algebra
-clap = { version = "4.4", features = ["derive"] }  # CLI argument parsing
-num-complex = "0.4"        # Complex number support
 anyhow = "1.0"             # Error handling
 libc = "0.2"               # C FFI types
-
-# Web server dependencies (optional, for web version)
-axum = { version = "0.7", features = ["multipart"], optional = true }
-tokio = { version = "1", features = ["full"], optional = true }
-tower-http = { version = "0.5", features = ["fs", "cors"], optional = true }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.0", features = ["v4"], optional = true }
-base64 = { version = "0.21", optional = true }
-
-[features]
-default = ["web"]
-web = ["axum", "tokio", "tower-http", "uuid", "base64"]

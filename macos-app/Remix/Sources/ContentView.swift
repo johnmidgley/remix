@@ -759,8 +759,6 @@ struct DropZoneView: View {
     @EnvironmentObject var audioEngine: AudioEngine
     @State private var isDragOver = false
     
-    let componentOptions = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]
-    
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -782,11 +780,9 @@ struct DropZoneView: View {
                             .font(.system(size: 14))
                             .foregroundColor(Color(hex: "888888"))
                         
-                        if audioEngine.separationMode == .demucs {
-                            Text("Demucs may take several minutes on first run")
-                                .font(.system(size: 11))
-                                .foregroundColor(Color(hex: "666666"))
-                        }
+                        Text("Demucs may take several minutes on first run")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "666666"))
                     }
                 } else {
                     ZStack {
@@ -827,55 +823,13 @@ struct DropZoneView: View {
                         handleDrop(providers: providers)
                     }
                     
-                    // Mode selector
-                    VStack(spacing: 12) {
-                        HStack(spacing: 12) {
-                            Text("Mode:")
-                                .font(.system(size: 12))
-                                .foregroundColor(Color(hex: "888888"))
-                            
-                            Picker("", selection: $audioEngine.separationMode) {
-                                ForEach(SeparationMode.allCases, id: \.self) { mode in
-                                    Text(mode.rawValue).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(width: 180)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color(hex: "333333"))
-                            )
-                        }
-                        
-                        // Show component count only for PCA mode
-                        if audioEngine.separationMode == .pca {
-                            HStack(spacing: 12) {
-                                Text("Components:")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(Color(hex: "888888"))
-                                
-                                Picker("", selection: $audioEngine.selectedComponentCount) {
-                                    ForEach(componentOptions, id: \.self) { count in
-                                        Text("\(count)").tag(count)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(width: 80)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color(hex: "333333"))
-                                )
-                            }
-                        }
-                        
-                        // Mode description
-                        Text(modeDescription)
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(hex: "666666"))
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 350)
-                    }
-                    .padding(.top, 8)
+                    // Info text
+                    Text("Separates into: Drums, Bass, Vocals, Guitar, Keys, Other\nRequires Python & ~4GB download on first run")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(hex: "666666"))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 350)
+                        .padding(.top, 8)
                 }
             }
             
@@ -889,15 +843,6 @@ struct DropZoneView: View {
                 endPoint: .bottom
             )
         )
-    }
-    
-    var modeDescription: String {
-        switch audioEngine.separationMode {
-        case .demucs:
-            return "Separates into: Drums, Bass, Vocals, Guitar, Keys, Other\nRequires Python & ~4GB download on first run"
-        case .pca:
-            return "Separates by spectral patterns (experimental)"
-        }
     }
     
     func handleDrop(providers: [NSItemProvider]) -> Bool {
@@ -921,8 +866,6 @@ struct DropZoneView: View {
 // MARK: - Pre-Analysis View (file loaded but not analyzed)
 struct PreAnalysisView: View {
     @EnvironmentObject var audioEngine: AudioEngine
-    
-    let componentOptions = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]
     
     var body: some View {
         VStack(spacing: 0) {
@@ -950,61 +893,17 @@ struct PreAnalysisView: View {
                             .font(.system(size: 14))
                             .foregroundColor(Color(hex: "888888"))
                         
-                        if audioEngine.separationMode == .demucs {
-                            Text("Demucs may take several minutes on first run")
-                                .font(.system(size: 11))
-                                .foregroundColor(Color(hex: "666666"))
-                        }
-                    }
-                } else {
-                    // Mode selector
-                    VStack(spacing: 16) {
-                        HStack(spacing: 12) {
-                            Text("Mode:")
-                                .font(.system(size: 13))
-                                .foregroundColor(Color(hex: "888888"))
-                            
-                            Picker("", selection: $audioEngine.separationMode) {
-                                ForEach(SeparationMode.allCases, id: \.self) { mode in
-                                    Text(mode.rawValue).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(width: 180)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color(hex: "333333"))
-                            )
-                        }
-                        
-                        // Show component count only for PCA mode
-                        if audioEngine.separationMode == .pca {
-                            HStack(spacing: 12) {
-                                Text("Components:")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(Color(hex: "888888"))
-                                
-                                Picker("", selection: $audioEngine.selectedComponentCount) {
-                                    ForEach(componentOptions, id: \.self) { count in
-                                        Text("\(count)").tag(count)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(width: 80)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color(hex: "333333"))
-                                )
-                            }
-                        }
-                        
-                        // Mode description
-                        Text(modeDescription)
+                        Text("Demucs may take several minutes on first run")
                             .font(.system(size: 11))
                             .foregroundColor(Color(hex: "666666"))
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 400)
                     }
+                } else {
+                    // Info text
+                    Text("Separates into: Drums, Bass, Vocals, Guitar, Keys, Other\nRequires Python & ~4GB download on first run")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(hex: "666666"))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
                     
                     // Analyze button
                     Button(action: { audioEngine.analyze() }) {
@@ -1047,15 +946,6 @@ struct PreAnalysisView: View {
                 endPoint: .bottom
             )
         )
-    }
-    
-    var modeDescription: String {
-        switch audioEngine.separationMode {
-        case .demucs:
-            return "Separates into: Drums, Bass, Vocals, Guitar, Keys, Other\nRequires Python & ~4GB download on first run"
-        case .pca:
-            return "Separates by spectral patterns (experimental)"
-        }
     }
 }
 
@@ -1400,13 +1290,6 @@ struct ChannelStripView: View {
                     .foregroundColor(Color(hex: "9a9a9a"))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                
-                // Show variance only in PCA mode
-                if audioEngine.separationMode == .pca && index < audioEngine.varianceRatios.count {
-                    Text(String(format: "%.1f%%", audioEngine.varianceRatios[index]))
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundColor(Color(hex: "666666"))
-                }
             }
             .padding(.top, 8)
             

@@ -1,12 +1,11 @@
 # Remix
 
-Audio stem separation tool with a native macOS mixer interface. Supports AI-powered instrument separation via Demucs, or spectral decomposition via PCA.
+Audio stem separation tool with a native macOS mixer interface. Uses AI-powered Demucs for professional-quality instrument separation.
 
 ## Features
 
-- **Demucs Instrument Separation**: Splits audio into 6 stems using AI:
+- **AI Instrument Separation**: Splits audio into 6 stems using Demucs:
   - Drums, Bass, Vocals, Guitar, Keys (piano), Other
-- **PCA Mode**: Experimental spectral decomposition into principal components
 - **Multiple Formats**: Supports WAV and MP3 input files
 - **Native macOS App**: Logic Pro-style interface with SwiftUI
 - **Real-time Mixing**: Adjust volume levels for each stem with faders
@@ -34,7 +33,7 @@ By default, the build script pre-downloads the Demucs AI model (~80MB) and bundl
 open "Remix.app"
 ```
 
-### Requirements for Demucs Mode
+### Requirements
 
 - **Python 3** (installed at `/usr/bin/python3`, `/usr/local/bin/python3`, or `/opt/homebrew/bin/python3`)
 - **Demucs** will be auto-installed on first use (~4GB download for Python packages)
@@ -43,13 +42,12 @@ open "Remix.app"
 
 ### Using the App
 
-1. **Select Mode**: Choose "Demucs (Instruments)" or "PCA (Spectral)"
-2. **Drop/Open**: Drag audio file onto the window or use File > Open
-3. **Wait**: Demucs takes 2-5 minutes depending on file length
-4. **Mix**: Use faders to adjust each stem's volume
-5. **Solo/Mute**: Click S to solo a stem, M to mute it
-6. **Transport**: Space to play/pause, transport controls in toolbar
-7. **Bounce**: Export your mix via File > Bounce or the toolbar button
+1. **Drop/Open**: Drag audio file onto the window or use File > Open
+2. **Wait**: Demucs takes 2-5 minutes depending on file length
+3. **Mix**: Use faders to adjust each stem's volume
+4. **Solo/Mute**: Click S to solo a stem, M to mute it
+5. **Transport**: Space to play/pause, transport controls in toolbar
+6. **Bounce**: Export your mix via File > Bounce or the toolbar button
 
 ### Keyboard Shortcuts
 
@@ -60,11 +58,9 @@ open "Remix.app"
 - `Return` - Stop
 - `Cmd+L` - Toggle loop
 
-## Separation Modes
+## Stem Separation
 
-### Demucs (Recommended)
-
-Uses Meta's Demucs v4 (htdemucs_6s) deep learning model to separate:
+Uses Meta's Demucs v4 (htdemucs_6s) deep learning model:
 
 | Stem | Description |
 |------|-------------|
@@ -77,20 +73,6 @@ Uses Meta's Demucs v4 (htdemucs_6s) deep learning model to separate:
 
 Quality: ~9 dB SDR (state-of-the-art)
 
-### PCA (Experimental)
-
-Decomposes audio by spectral patterns using Principal Component Analysis. Does NOT separate instruments - separates by frequency content patterns. Useful for experimental audio manipulation.
-
-## CLI / Web Version
-
-The original CLI and web interface are still available:
-
-```bash
-cargo build --release
-./target/release/music-tool           # Web server on localhost:3000
-./target/release/music-tool --cli -i audio.wav -n 4 -o ./output  # CLI mode
-```
-
 ## How Demucs Works
 
 Demucs v4 uses a hybrid transformer architecture:
@@ -101,14 +83,8 @@ Demucs v4 uses a hybrid transformer architecture:
 
 ## Building from Source
 
-### macOS App
 ```bash
 ./build-macos-app.sh
-```
-
-### Rust Library + CLI
-```bash
-cargo build --release
 ```
 
 ## Notes

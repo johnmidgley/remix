@@ -5,14 +5,8 @@ import AppKit
 import UniformTypeIdentifiers
 import CryptoKit
 
-/// Separation mode
-enum SeparationMode: String, CaseIterable, Codable {
-    case demucs = "Demucs (Instruments)"
-    case pca = "PCA (Spectral)"
-}
-
 // MARK: - Cache Manager
-/// Manages caching of analyzed audio stems/components
+/// Manages caching of analyzed audio stems
 class CacheManager {
     static let shared = CacheManager()
     
@@ -24,10 +18,7 @@ class CacheManager {
         let originalPath: String
         let fileSize: Int64
         let modificationDate: Date
-        let separationMode: SeparationMode
-        let componentCount: Int  // For PCA mode
         let stemNames: [String]
-        let varianceRatios: [Double]  // For PCA mode
         let sampleRate: UInt32
         let duration: Double
         let createdAt: Date
@@ -61,7 +52,7 @@ class CacheManager {
     }
     
     /// Check if valid cache exists for a file
-    func hasValidCache(for fileURL: URL, mode: SeparationMode, componentCount: Int = 0) -> Bool {
+    func hasValidCache(for fileURL: URL) -> Bool {
         guard let key = cacheKey(for: fileURL) else { return false }
         let dir = cacheDirectory(for: key)
         let metadataURL = dir.appendingPathComponent("metadata.json")
@@ -69,16 +60,6 @@ class CacheManager {
         guard fileManager.fileExists(atPath: metadataURL.path),
               let data = try? Data(contentsOf: metadataURL),
               let metadata = try? JSONDecoder().decode(CacheMetadata.self, from: data) else {
-            return false
-        }
-        
-        // Check mode matches
-        if metadata.separationMode != mode {
-            return false
-        }
-        
-        // For PCA, check component count matches
-        if mode == .pca && metadata.componentCount != componentCount {
             return false
         }
         
@@ -127,8 +108,8 @@ class CacheManager {
         return stems.isEmpty ? nil : stems
     }
     
-    /// Save Demucs stems to cache
-    func saveDemucsStems(
+    /// Save stems to cache
+    func saveStems(
         for fileURL: URL,
         stems: [(name: String, displayName: String, url: URL)],
         sampleRate: UInt32,
@@ -171,78 +152,7 @@ class CacheManager {
             originalPath: fileURL.path,
             fileSize: fileSize,
             modificationDate: modDate,
-            separationMode: .demucs,
-            componentCount: stems.count,
             stemNames: savedNames,
-            varianceRatios: [],
-            sampleRate: sampleRate,
-            duration: duration,
-            createdAt: Date()
-        )
-        
-        do {
-            let data = try JSONEncoder().encode(metadata)
-            try data.write(to: dir.appendingPathComponent("metadata.json"))
-            return true
-        } catch {
-            print("Failed to save metadata: \(error)")
-            return false
-        }
-    }
-    
-    /// Save PCA components to cache
-    func savePCAComponents(
-        for fileURL: URL,
-        buffers: [AVAudioPCMBuffer],
-        varianceRatios: [Double],
-        sampleRate: UInt32,
-        duration: Double
-    ) -> Bool {
-        guard let key = cacheKey(for: fileURL),
-              let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
-              let fileSize = attributes[.size] as? Int64,
-              let modDate = attributes[.modificationDate] as? Date else {
-            return false
-        }
-        
-        let dir = cacheDirectory(for: key)
-        
-        // Create cache directory
-        do {
-            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-        } catch {
-            print("Failed to create cache directory: \(error)")
-            return false
-        }
-        
-        // Save each component as WAV
-        var savedNames: [String] = []
-        for (i, buffer) in buffers.enumerated() {
-            let name = "PC \(i + 1)"
-            let destURL = dir.appendingPathComponent("\(name).wav")
-            
-            do {
-                if fileManager.fileExists(atPath: destURL.path) {
-                    try fileManager.removeItem(at: destURL)
-                }
-                
-                let file = try AVAudioFile(forWriting: destURL, settings: buffer.format.settings)
-                try file.write(from: buffer)
-                savedNames.append(name)
-            } catch {
-                print("Failed to save component \(i): \(error)")
-            }
-        }
-        
-        // Save metadata
-        let metadata = CacheMetadata(
-            originalPath: fileURL.path,
-            fileSize: fileSize,
-            modificationDate: modDate,
-            separationMode: .pca,
-            componentCount: buffers.count,
-            stemNames: savedNames,
-            varianceRatios: varianceRatios,
             sampleRate: sampleRate,
             duration: duration,
             createdAt: Date()
@@ -315,10 +225,6 @@ class AudioEngine: ObservableObject {
     @Published var selectionStart: Double = 0
     @Published var selectionEnd: Double = 0
     
-    // Mode selection
-    @Published var separationMode: SeparationMode = .demucs
-    @Published var selectedComponentCount: Int = 8  // For PCA mode
-    
     // Stem data
     @Published var stemNames: [String] = []
     @Published var faderValues: [Double] = []
@@ -329,11 +235,7 @@ class AudioEngine: ObservableObject {
     // Original audio meter level (for pre-analysis playback)
     @Published var originalMeterLevel: Float = 0
     
-    // For PCA mode - variance info
-    @Published var varianceRatios: [Double] = []
-    
     // MARK: - Private Properties
-    private var sessionPtr: OpaquePointer?  // For PCA mode
     private var audioEngine: AVAudioEngine?
     private var playerNodes: [AVAudioPlayerNode] = []
     private var mixerNode: AVAudioMixerNode?
@@ -416,9 +318,7 @@ class AudioEngine: ObservableObject {
         let parentDir = url.deletingLastPathComponent()
         
         // Check if cache exists for this file
-        let hasDemucsCache = CacheManager.shared.hasValidCache(for: url, mode: .demucs)
-        let hasPCACache = CacheManager.shared.hasValidCache(for: url, mode: .pca, componentCount: selectedComponentCount)
-        let hasCache = hasDemucsCache || hasPCACache
+        let hasCache = CacheManager.shared.hasValidCache(for: url)
         
         DispatchQueue.main.async {
             self.currentDirectory = parentDir
@@ -430,14 +330,7 @@ class AudioEngine: ObservableObject {
         
         // Auto-load from cache if available, otherwise load original for preview
         if hasCache {
-            // Prefer Demucs cache, fall back to PCA
-            if hasDemucsCache {
-                separationMode = .demucs
-                loadDemucsFromCache(url: url)
-            } else {
-                separationMode = .pca
-                loadPCAFromCache(url: url)
-            }
+            loadFromCache(url: url)
         } else {
             // Load original audio file for playback (without analysis)
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -449,27 +342,11 @@ class AudioEngine: ObservableObject {
     /// Load analysis from cache if available
     func loadFromCache() {
         guard let url = currentInputURL else { return }
-        
-        // Check which mode has cache
-        let hasDemucsCache = CacheManager.shared.hasValidCache(for: url, mode: .demucs)
-        let hasPCACache = CacheManager.shared.hasValidCache(for: url, mode: .pca, componentCount: selectedComponentCount)
-        
-        // Prefer current mode's cache, fall back to other mode
-        if separationMode == .demucs && hasDemucsCache {
-            loadDemucsFromCache(url: url)
-        } else if separationMode == .pca && hasPCACache {
-            loadPCAFromCache(url: url)
-        } else if hasDemucsCache {
-            separationMode = .demucs
-            loadDemucsFromCache(url: url)
-        } else if hasPCACache {
-            separationMode = .pca
-            loadPCAFromCache(url: url)
-        }
+        loadFromCache(url: url)
     }
     
-    /// Load Demucs stems from cache
-    private func loadDemucsFromCache(url: URL) {
+    /// Load stems from cache
+    private func loadFromCache(url: URL) {
         guard let metadata = CacheManager.shared.loadMetadata(for: url),
               let stems = CacheManager.shared.getStemURLs(for: url) else {
             return
@@ -515,73 +392,6 @@ class AudioEngine: ObservableObject {
                 self.componentCount = buffers.count
                 self.sampleRate = metadata.sampleRate
                 self.duration = metadata.duration
-                self.varianceRatios = []
-                
-                self.faderValues = Array(repeating: 1.0, count: buffers.count)
-                self.soloStates = Array(repeating: false, count: buffers.count)
-                self.muteStates = Array(repeating: false, count: buffers.count)
-                self.meterLevels = Array(repeating: 0.0, count: buffers.count)
-                self.selectionStart = 0
-                self.selectionEnd = 0
-                
-                self.setupPlayerNodes()
-                self.computeWaveformSamples()
-                
-                self.hasLoadedFile = false
-                self.hasSession = true
-                self.loadedFromCache = true
-                self.isProcessing = false
-                self.processingStatus = ""
-                self.processingProgress = 1
-            }
-        }
-    }
-    
-    /// Load PCA components from cache
-    private func loadPCAFromCache(url: URL) {
-        guard let metadata = CacheManager.shared.loadMetadata(for: url),
-              let stems = CacheManager.shared.getStemURLs(for: url) else {
-            return
-        }
-        
-        DispatchQueue.main.async {
-            self.isProcessing = true
-            self.processingStatus = "Loading from cache..."
-            self.processingProgress = 0.5
-        }
-        
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            // Load buffers
-            var buffers: [AVAudioPCMBuffer] = []
-            var names: [String] = []
-            
-            for stem in stems {
-                do {
-                    let file = try AVAudioFile(forReading: stem.url)
-                    let frameCount = AVAudioFrameCount(file.length)
-                    guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount) else {
-                        continue
-                    }
-                    try file.read(into: buffer)
-                    buffers.append(buffer)
-                    names.append(stem.name)
-                } catch {
-                    print("Failed to load cached component \(stem.name): \(error)")
-                }
-            }
-            
-            DispatchQueue.main.async {
-                // Clean up original audio player
-                self.cleanupOriginalPlayer()
-                
-                self.audioBuffers = buffers
-                self.stemNames = names
-                self.componentCount = buffers.count
-                self.sampleRate = metadata.sampleRate
-                self.duration = metadata.duration
-                self.varianceRatios = metadata.varianceRatios
                 
                 self.faderValues = Array(repeating: 1.0, count: buffers.count)
                 self.soloStates = Array(repeating: false, count: buffers.count)
@@ -750,14 +560,7 @@ class AudioEngine: ObservableObject {
         }
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            switch self.separationMode {
-            case .demucs:
-                self.processWithDemucs(url: url)
-            case .pca:
-                self.processWithPCA(url: url)
-            }
+            self?.processWithDemucs(url: url)
         }
     }
     
@@ -1005,14 +808,14 @@ class AudioEngine: ObservableObject {
         
         // Save to cache
         if let inputURL = currentInputURL, !stems.isEmpty {
-            let saved = CacheManager.shared.saveDemucsStems(
+            let saved = CacheManager.shared.saveStems(
                 for: inputURL,
                 stems: stems,
                 sampleRate: detectedSampleRate,
                 duration: detectedDuration
             )
             if saved {
-                print("Saved Demucs stems to cache")
+                print("Saved stems to cache")
             }
         }
         
@@ -1027,7 +830,6 @@ class AudioEngine: ObservableObject {
             self.componentCount = buffers.count
             self.sampleRate = detectedSampleRate
             self.duration = detectedDuration
-            self.varianceRatios = []  // Not applicable for Demucs
             
             self.faderValues = Array(repeating: 1.0, count: buffers.count)
             self.soloStates = Array(repeating: false, count: buffers.count)
@@ -1065,131 +867,6 @@ class AudioEngine: ObservableObject {
         originalAudioBuffer = nil
         originalPlayerNode = nil
         originalMeterNode = nil
-    }
-    
-    // MARK: - PCA Processing
-    private func processWithPCA(url: URL) {
-        updateStatus("Loading audio...")
-        updateProgress(0.1)
-        
-        do {
-            let data = try Data(contentsOf: url)
-            
-            updateStatus("Computing PCA decomposition...")
-            updateProgress(0.2)
-            
-            let result = data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> PcaResultFFI in
-                let ptr = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self)
-                return pca_process_audio(ptr, data.count, UInt32(selectedComponentCount), 2048, 512)
-            }
-            
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.isProcessing = false
-                self.processingStatus = ""
-                self.processingProgress = 1
-                
-                if let error = result.error {
-                    self.errorMessage = String(cString: error)
-                    pca_free_error(error)
-                    return
-                }
-                
-                guard let session = result.session else {
-                    self.errorMessage = "Unknown error occurred"
-                    return
-                }
-                
-                // Clean up original audio player (no longer needed after analysis)
-                self.cleanupOriginalPlayer()
-                
-                self.sessionPtr = session
-                self.hasLoadedFile = false  // No longer in pre-analysis state
-                self.hasSession = true
-                self.componentCount = Int(result.num_components)
-                self.sampleRate = result.sample_rate
-                
-                // Initialize stem names and variance ratios
-                self.stemNames = (0..<self.componentCount).map { "PC \($0 + 1)" }
-                self.varianceRatios = (0..<self.componentCount).map { i in
-                    let info = pca_get_component_info(session, UInt32(i))
-                    return info.variance_ratio
-                }
-                
-                self.faderValues = Array(repeating: 1.0, count: self.componentCount)
-                self.soloStates = Array(repeating: false, count: self.componentCount)
-                self.muteStates = Array(repeating: false, count: self.componentCount)
-                self.meterLevels = Array(repeating: 0.0, count: self.componentCount)
-                
-                self.loadPCABuffers(session: session)
-            }
-        } catch {
-            handleError("Failed to read file: \(error.localizedDescription)")
-        }
-    }
-    
-    private func loadPCABuffers(session: OpaquePointer) {
-        audioBuffers.removeAll()
-        playerNodes.removeAll()
-        
-        let format = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1)!
-        
-        for i in 0..<componentCount {
-            let buffer = pca_get_component_audio(session, UInt32(i))
-            
-            if buffer.error != nil {
-                pca_free_audio_buffer(buffer)
-                continue
-            }
-            
-            guard let data = buffer.data else {
-                pca_free_audio_buffer(buffer)
-                continue
-            }
-            
-            let frameCount = AVAudioFrameCount(buffer.length)
-            guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-                pca_free_audio_buffer(buffer)
-                continue
-            }
-            
-            pcmBuffer.frameLength = frameCount
-            
-            if let channelData = pcmBuffer.floatChannelData?[0] {
-                for j in 0..<Int(buffer.length) {
-                    channelData[j] = Float(data[j])
-                }
-            }
-            
-            audioBuffers.append(pcmBuffer)
-            
-            if i == 0 {
-                duration = Double(buffer.length) / Double(sampleRate)
-            }
-            
-            pca_free_audio_buffer(buffer)
-        }
-        
-        // Save to cache
-        if let inputURL = currentInputURL, !audioBuffers.isEmpty {
-            let saved = CacheManager.shared.savePCAComponents(
-                for: inputURL,
-                buffers: audioBuffers,
-                varianceRatios: varianceRatios,
-                sampleRate: sampleRate,
-                duration: duration
-            )
-            if saved {
-                print("Saved PCA components to cache")
-            }
-        }
-        
-        // Update cache status
-        loadedFromCache = false  // Fresh analysis
-        hasCachedAnalysis = true  // Now cached
-        
-        setupPlayerNodes()
-        computeWaveformSamples()
     }
     
     // MARK: - Helper Methods
@@ -1768,11 +1445,6 @@ class AudioEngine: ObservableObject {
         originalPlayerNode = nil
         originalMeterNode = nil
         
-        if let session = sessionPtr {
-            pca_session_free(session)
-        }
-        sessionPtr = nil
-        
         // Clean up temp directory
         if let tempDir = tempDirectory {
             try? FileManager.default.removeItem(at: tempDir)
@@ -1785,7 +1457,6 @@ class AudioEngine: ObservableObject {
         hasCachedAnalysis = false
         componentCount = 0
         stemNames.removeAll()
-        varianceRatios.removeAll()
         faderValues.removeAll()
         soloStates.removeAll()
         muteStates.removeAll()
