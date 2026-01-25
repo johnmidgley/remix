@@ -32,6 +32,13 @@ struct RemixApp: App {
                 }
                 .keyboardShortcut("b", modifiers: .command)
                 .disabled(!audioEngine.hasSession)
+                
+                Divider()
+                Button("Re-analyze") {
+                    audioEngine.reanalyze()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!audioEngine.hasSession)
             }
             
             CommandGroup(replacing: .pasteboard) {
@@ -119,6 +126,7 @@ struct HelpView: View {
                         VStack(spacing: 4) {
                             shortcutRow("Open File", "⌘O")
                             shortcutRow("Bounce Mix", "⌘B")
+                            shortcutRow("Re-analyze", "⇧⌘R")
                             shortcutRow("Play / Pause", "Space")
                             shortcutRow("Stop", "Return")
                             shortcutRow("Toggle Loop", "⌘L")

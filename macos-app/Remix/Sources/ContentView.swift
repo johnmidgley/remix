@@ -421,24 +421,6 @@ struct ToolbarView: View {
             
             // Right section - Actions
             HStack(spacing: 12) {
-                // Cache indicator (show when session is loaded from cache)
-                if audioEngine.hasSession && audioEngine.loadedFromCache {
-                    HStack(spacing: 4) {
-                        Image(systemName: "archivebox.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(Color(hex: "30d158"))
-                        Text("Cached")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(Color(hex: "30d158"))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color(hex: "30d158").opacity(0.15))
-                    )
-                }
-                
                 // Playback speed (show when file is loaded or analyzed)
                 if audioEngine.hasLoadedFile || audioEngine.hasSession {
                     HStack(spacing: 4) {
@@ -460,15 +442,6 @@ struct ToolbarView: View {
                         .pickerStyle(.menu)
                         .frame(width: 70)
                     }
-                }
-                
-                // Re-analyze button (only when loaded from cache)
-                if audioEngine.hasSession && audioEngine.loadedFromCache {
-                    Button(action: { audioEngine.reanalyze() }) {
-                        Label("Re-analyze", systemImage: "arrow.clockwise")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .buttonStyle(SecondaryToolbarButtonStyle())
                 }
                 
                 // Bounce only available after analysis
@@ -533,8 +506,8 @@ struct TransportView: View {
             // LCD Time Display
             LCDDisplay(time: audioEngine.currentTime, duration: audioEngine.duration)
             
-            // Master level meter
-            ToolbarMeterView(level: masterLevel)
+            // Stereo VU meters
+            StereoVUMetersView(leftLevel: masterLevel, rightLevel: masterLevel)
         }
     }
     
@@ -551,62 +524,176 @@ struct TransportView: View {
     }
 }
 
-// MARK: - Toolbar Meter (vertical level meter for toolbar)
-struct ToolbarMeterView: View {
-    let level: Float
+// MARK: - Stereo VU Meters
+struct StereoVUMetersView: View {
+    let leftLevel: Float
+    let rightLevel: Float
     
     var body: some View {
-        HStack(spacing: 3) {
-            // Left channel
-            GeometryReader { geometry in
-                ZStack(alignment: .bottom) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color(hex: "111111"))
-                    
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(meterGradient)
-                        .frame(height: geometry.size.height * CGFloat(level))
-                }
-            }
-            .frame(width: 6, height: 28)
-            
-            // Right channel
-            GeometryReader { geometry in
-                ZStack(alignment: .bottom) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color(hex: "111111"))
-                    
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(meterGradient)
-                        .frame(height: geometry.size.height * CGFloat(level))
-                }
-            }
-            .frame(width: 6, height: 28)
+        HStack(spacing: 4) {
+            VUMeterView(level: leftLevel)
+            VUMeterView(level: rightLevel)
         }
-        .padding(.horizontal, 6)
+    }
+}
+
+// MARK: - Analog VU Meter (needle-style level meter)
+struct VUMeterView: View {
+    let level: Float
+    
+    // Needle angle: -45° (min) to +45° (max)
+    private var needleAngle: Double {
+        let clampedLevel = Double(max(0, min(1, level)))
+        // Map 0-1 to -45 to +45 degrees
+        return -45 + (clampedLevel * 90)
+    }
+    
+    var body: some View {
+        ZStack {
+            // Meter face background
+            MeterFaceView()
+            
+            // Needle
+            NeedleView(angle: needleAngle)
+            
+            // Pivot point cover
+            Circle()
+                .fill(Color(hex: "2a2a2a"))
+                .frame(width: 6, height: 6)
+                .offset(y: 12)
+        }
+        .frame(width: 50, height: 28)
+        .padding(.horizontal, 4)
         .padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(Color(hex: "0a0a0a"))
+                .fill(
+                    LinearGradient(
+                        colors: [Color(hex: "1a1a1a"), Color(hex: "0f0f0f")],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color(hex: "333333"), lineWidth: 1)
+                        .stroke(Color(hex: "3a3a3a"), lineWidth: 1)
                 )
         )
+        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
     }
+}
+
+// VU Meter face with tick marks
+struct MeterFaceView: View {
+    var body: some View {
+        Canvas { context, size in
+            let centerX = size.width / 2
+            let centerY = size.height + 2  // Pivot below visible area
+            let radius: CGFloat = 22
+            
+            // Green zone (-20 to -6 dB, roughly 0-60% of arc)
+            let greenArc = Path { path in
+                path.addArc(
+                    center: CGPoint(x: centerX, y: centerY),
+                    radius: radius - 2,
+                    startAngle: .degrees(-135),
+                    endAngle: .degrees(-81),
+                    clockwise: false
+                )
+            }
+            context.stroke(greenArc, with: .color(Color(hex: "30d158").opacity(0.6)), lineWidth: 3)
+            
+            // Yellow zone (-6 to 0 dB)
+            let yellowArc = Path { path in
+                path.addArc(
+                    center: CGPoint(x: centerX, y: centerY),
+                    radius: radius - 2,
+                    startAngle: .degrees(-81),
+                    endAngle: .degrees(-63),
+                    clockwise: false
+                )
+            }
+            context.stroke(yellowArc, with: .color(Color(hex: "ffcc00").opacity(0.6)), lineWidth: 3)
+            
+            // Red zone (0 to +3 dB)
+            let redArc = Path { path in
+                path.addArc(
+                    center: CGPoint(x: centerX, y: centerY),
+                    radius: radius - 2,
+                    startAngle: .degrees(-63),
+                    endAngle: .degrees(-45),
+                    clockwise: false
+                )
+            }
+            context.stroke(redArc, with: .color(Color(hex: "ff3b30").opacity(0.6)), lineWidth: 3)
+            
+            // Draw tick marks
+            let tickAngles: [(angle: Double, length: CGFloat)] = [
+                (-135, 4),
+                (-117, 3),
+                (-99, 3),
+                (-81, 3),
+                (-72, 4),
+                (-54, 3),
+                (-45, 4),
+            ]
+            
+            for tick in tickAngles {
+                let angleRad = tick.angle * .pi / 180
+                let innerRadius = radius - 6
+                let outerRadius = radius - 6 + tick.length
+                
+                let innerX = centerX + innerRadius * cos(CGFloat(angleRad))
+                let innerY = centerY + innerRadius * sin(CGFloat(angleRad))
+                let outerX = centerX + outerRadius * cos(CGFloat(angleRad))
+                let outerY = centerY + outerRadius * sin(CGFloat(angleRad))
+                
+                var tickPath = Path()
+                tickPath.move(to: CGPoint(x: innerX, y: innerY))
+                tickPath.addLine(to: CGPoint(x: outerX, y: outerY))
+                
+                context.stroke(tickPath, with: .color(Color(hex: "888888")), lineWidth: 1)
+            }
+        }
+    }
+}
+
+// Animated needle
+struct NeedleView: View {
+    let angle: Double
     
-    var meterGradient: LinearGradient {
-        LinearGradient(
-            colors: [
-                Color(hex: "30d158"),
-                Color(hex: "30d158"),
-                Color(hex: "ffcc00"),
-                Color(hex: "ff9500"),
-                Color(hex: "ff3b30")
-            ],
-            startPoint: .bottom,
-            endPoint: .top
-        )
+    var body: some View {
+        Canvas { context, size in
+            let centerX = size.width / 2
+            let centerY = size.height + 2
+            let needleLength: CGFloat = 18
+            
+            let angleRad = (angle - 90) * .pi / 180
+            let tipX = centerX + needleLength * cos(CGFloat(angleRad))
+            let tipY = centerY + needleLength * sin(CGFloat(angleRad))
+            
+            // Needle shadow
+            var shadowPath = Path()
+            shadowPath.move(to: CGPoint(x: centerX + 0.5, y: centerY + 0.5))
+            shadowPath.addLine(to: CGPoint(x: tipX + 0.5, y: tipY + 0.5))
+            context.stroke(shadowPath, with: .color(.black.opacity(0.5)), lineWidth: 1.5)
+            
+            // Needle body
+            var needlePath = Path()
+            needlePath.move(to: CGPoint(x: centerX, y: centerY))
+            needlePath.addLine(to: CGPoint(x: tipX, y: tipY))
+            context.stroke(needlePath, with: .color(Color(hex: "ff6b6b")), lineWidth: 1)
+            
+            // Needle tip highlight
+            let highlightLength: CGFloat = 4
+            let highlightX = tipX - highlightLength * cos(CGFloat(angleRad))
+            let highlightY = tipY - highlightLength * sin(CGFloat(angleRad))
+            var highlightPath = Path()
+            highlightPath.move(to: CGPoint(x: highlightX, y: highlightY))
+            highlightPath.addLine(to: CGPoint(x: tipX, y: tipY))
+            context.stroke(highlightPath, with: .color(Color(hex: "ffffff")), lineWidth: 1)
+        }
+        .animation(.easeOut(duration: 0.1), value: angle)
     }
 }
 
@@ -870,40 +957,6 @@ struct PreAnalysisView: View {
                         }
                     }
                 } else {
-                    // Cache available banner
-                    if audioEngine.hasCachedAnalysis {
-                        HStack(spacing: 8) {
-                            Image(systemName: "archivebox.fill")
-                                .foregroundColor(Color(hex: "30d158"))
-                            Text("Previous analysis found")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.white)
-                            
-                            Button(action: { audioEngine.loadFromCache() }) {
-                                Text("Load")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 5)
-                                            .fill(Color(hex: "30d158"))
-                                    )
-                                    .foregroundColor(.black)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color(hex: "30d158").opacity(0.15))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color(hex: "30d158").opacity(0.3), lineWidth: 1)
-                                )
-                        )
-                    }
-                    
                     // Mode selector
                     VStack(spacing: 16) {
                         HStack(spacing: 12) {
@@ -958,7 +1011,7 @@ struct PreAnalysisView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "waveform.badge.magnifyingglass")
                                 .font(.system(size: 16))
-                            Text(audioEngine.hasCachedAnalysis ? "Re-analyze" : "Analyze")
+                            Text("Analyze")
                                 .font(.system(size: 15, weight: .semibold))
                         }
                         .padding(.horizontal, 32)
@@ -1141,6 +1194,34 @@ struct MixerView: View {
             }
             .frame(maxWidth: .infinity)
             .background(Color(hex: "1e1e1e"))
+            
+            // Mixer controls bar
+            HStack {
+                Spacer()
+                
+                HStack(spacing: 12) {
+                    Button(action: { audioEngine.zeroAllFaders() }) {
+                        Text("All 0")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(SecondaryToolbarButtonStyle())
+                    
+                    Button(action: { audioEngine.resetAllFaders() }) {
+                        Text("Reset")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(SecondaryToolbarButtonStyle())
+                }
+                .padding(.trailing, 20)
+            }
+            .frame(height: 40)
+            .background(Color(hex: "191919"))
+            .overlay(
+                Rectangle()
+                    .frame(height: 1)
+                    .foregroundColor(Color(hex: "333333")),
+                alignment: .top
+            )
         }
     }
 }

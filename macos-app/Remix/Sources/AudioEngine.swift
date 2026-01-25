@@ -418,18 +418,31 @@ class AudioEngine: ObservableObject {
         // Check if cache exists for this file
         let hasDemucsCache = CacheManager.shared.hasValidCache(for: url, mode: .demucs)
         let hasPCACache = CacheManager.shared.hasValidCache(for: url, mode: .pca, componentCount: selectedComponentCount)
+        let hasCache = hasDemucsCache || hasPCACache
         
         DispatchQueue.main.async {
             self.currentDirectory = parentDir
             self.errorMessage = nil
             self.fileName = url.lastPathComponent
-            self.hasCachedAnalysis = hasDemucsCache || hasPCACache
+            self.hasCachedAnalysis = hasCache
             self.loadedFromCache = false
         }
         
-        // Load original audio file for playback (without analysis)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.loadOriginalAudio(url: url)
+        // Auto-load from cache if available, otherwise load original for preview
+        if hasCache {
+            // Prefer Demucs cache, fall back to PCA
+            if hasDemucsCache {
+                separationMode = .demucs
+                loadDemucsFromCache(url: url)
+            } else {
+                separationMode = .pca
+                loadPCAFromCache(url: url)
+            }
+        } else {
+            // Load original audio file for playback (without analysis)
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                self?.loadOriginalAudio(url: url)
+            }
         }
     }
     
@@ -1531,6 +1544,13 @@ class AudioEngine: ObservableObject {
             faderValues[i] = 1.0
             soloStates[i] = false
             muteStates[i] = false
+        }
+        updateAllGains()
+    }
+    
+    func zeroAllFaders() {
+        for i in 0..<componentCount {
+            faderValues[i] = 0.0
         }
         updateAllGains()
     }
