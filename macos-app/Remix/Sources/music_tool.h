@@ -1,5 +1,5 @@
 // music_tool.h
-// C FFI header for the Rust PCA audio processing library
+// C FFI header for the Rust audio processing library
 
 #ifndef MUSIC_TOOL_H
 #define MUSIC_TOOL_H
@@ -11,30 +11,9 @@
 extern "C" {
 #endif
 
-// Opaque session handle
-typedef struct PcaSession PcaSession;
-
-// Result from processing audio
-typedef struct {
-    PcaSession* session;
-    uint32_t num_components;
-    uint32_t sample_rate;
-    char* error;
-} PcaResultFFI;
-
-// Audio buffer
-typedef struct {
-    double* data;
-    size_t length;
-    uint32_t sample_rate;
-    char* error;
-} AudioBufferFFI;
-
-// Component info
-typedef struct {
-    double eigenvalue;
-    double variance_ratio;
-} ComponentInfoFFI;
+// ============================================================================
+// Audio Conversion
+// ============================================================================
 
 // Result from audio conversion
 typedef struct {
@@ -44,71 +23,68 @@ typedef struct {
     char* error;
 } ConvertResultFFI;
 
-// Process audio data and create a PCA session
-// Returns a result with session handle or error
-// Caller must free session with pca_session_free
-PcaResultFFI pca_process_audio(
-    const uint8_t* data,
-    size_t data_len,
-    uint32_t num_components,
-    uint32_t window_size,
-    uint32_t hop_size
-);
-
-// Get component info (eigenvalue and variance ratio)
-ComponentInfoFFI pca_get_component_info(
-    const PcaSession* session,
-    uint32_t component_index
-);
-
-// Get audio samples for a specific component
-// Caller must free with pca_free_audio_buffer
-AudioBufferFFI pca_get_component_audio(
-    const PcaSession* session,
-    uint32_t component_index
-);
-
-// Mix components with given volumes
-// volumes array must have num_volumes elements
-// Caller must free with pca_free_audio_buffer
-AudioBufferFFI pca_mix_components(
-    const PcaSession* session,
-    const double* volumes,
-    size_t num_volumes
-);
-
-// Encode audio samples as WAV data
-// Returns pointer to WAV bytes, sets out_len to length
-// Caller must free with pca_free_bytes
-uint8_t* pca_encode_wav(
-    const double* samples,
-    size_t num_samples,
-    uint32_t sample_rate,
-    size_t* out_len
-);
-
-// Free a PCA session
-void pca_session_free(PcaSession* session);
-
-// Free an audio buffer
-void pca_free_audio_buffer(AudioBufferFFI buffer);
-
-// Free a byte array
-void pca_free_bytes(uint8_t* ptr, size_t len);
-
-// Free an error string
-void pca_free_error(char* ptr);
-
-// Free error in result
-void pca_result_free_error(PcaResultFFI* result);
-
 // Convert audio file (MP3, WAV, etc.) to WAV format
 // Input can be any supported audio format
-// Caller must free data with pca_free_bytes and error with pca_free_error
+// Caller must free data with audio_free_bytes and error with audio_free_error
+ConvertResultFFI audio_convert_to_wav(
+    const uint8_t* data,
+    size_t data_len
+);
+
+// Free a byte array
+void audio_free_bytes(uint8_t* ptr, size_t len);
+
+// Free an error string
+void audio_free_error(char* ptr);
+
+// Legacy aliases for backward compatibility
 ConvertResultFFI pca_convert_to_wav(
     const uint8_t* data,
     size_t data_len
 );
+
+void pca_free_bytes(uint8_t* ptr, size_t len);
+
+void pca_free_error(char* ptr);
+
+// ============================================================================
+// Demucs Stem Separation
+// ============================================================================
+
+// Opaque handle to a loaded Demucs model
+typedef struct DemucsModelHandle DemucsModelHandle;
+
+// Result from stem separation
+typedef struct {
+    uint32_t stem_count;      // Number of stems (usually 6)
+    char** stem_names;        // Array of stem names
+    char** stem_paths;        // Array of stem file paths
+    char* error;              // Error message (null if success)
+} SeparationResultFFI;
+
+// Load a Demucs ONNX model from file
+// Returns null on failure
+DemucsModelHandle* demucs_load_model(const char* model_path);
+
+// Free a Demucs model handle
+void demucs_free_model(DemucsModelHandle* handle);
+
+// Separate audio file into stems
+// Caller must free result with demucs_free_result
+SeparationResultFFI demucs_separate(
+    DemucsModelHandle* handle,
+    const char* input_path,
+    const char* output_dir
+);
+
+// Free a separation result
+void demucs_free_result(SeparationResultFFI result);
+
+// Get the number of stems the model produces (6 for htdemucs_6s)
+uint32_t demucs_stem_count(void);
+
+// Get a stem name by index (returns static string, do not free)
+const char* demucs_stem_name(uint32_t index);
 
 #ifdef __cplusplus
 }

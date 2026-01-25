@@ -44,6 +44,8 @@ struct FileBrowserView: View {
     @State private var directoryContents: [FileItem] = []
     @State private var selectedFile: URL?
     @State private var quickAccessLocations: [QuickAccessItem] = []
+    @State private var isShowingCache: Bool = true
+    @State private var cachedItems: [CachedFileItem] = []
     
     struct FileItem: Identifiable, Hashable {
         let id = UUID()
@@ -61,11 +63,36 @@ struct FileBrowserView: View {
         }
     }
     
+    struct CachedFileItem: Identifiable {
+        let id = UUID()
+        let originalPath: String
+        let fileName: String
+        let stemCount: Int
+        let duration: Double
+        let createdAt: Date
+        let cacheKey: String
+    }
+    
     struct QuickAccessItem: Identifiable {
         let id = UUID()
         let name: String
         let icon: String
-        let url: URL
+        let url: URL?  // nil for special items like Cache
+        let isSpecial: Bool
+        
+        init(name: String, icon: String, url: URL) {
+            self.name = name
+            self.icon = icon
+            self.url = url
+            self.isSpecial = false
+        }
+        
+        init(name: String, icon: String, isSpecial: Bool) {
+            self.name = name
+            self.icon = icon
+            self.url = nil
+            self.isSpecial = isSpecial
+        }
     }
     
     var body: some View {
@@ -79,9 +106,9 @@ struct FileBrowserView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(Color(hex: "888888"))
-                    .disabled(audioEngine.currentDirectory.path == "/")
+                    .disabled(isShowingCache || audioEngine.currentDirectory.path == "/")
                     
-                    Text(audioEngine.currentDirectory.lastPathComponent)
+                    Text(isShowingCache ? "Cache" : audioEngine.currentDirectory.lastPathComponent)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.white)
                         .lineLimit(1)
@@ -99,27 +126,39 @@ struct FileBrowserView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 
-                // Breadcrumb path
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(pathComponents, id: \.self) { component in
-                            Button(action: { navigateTo(component) }) {
-                                Text(component.lastPathComponent.isEmpty ? "/" : component.lastPathComponent)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(Color(hex: "666666"))
-                            }
-                            .buttonStyle(.plain)
-                            
-                            if component != audioEngine.currentDirectory {
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 8))
-                                    .foregroundColor(Color(hex: "444444"))
+                // Breadcrumb path (hidden when showing cache)
+                if !isShowingCache {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(pathComponents, id: \.self) { component in
+                                Button(action: { navigateTo(component) }) {
+                                    Text(component.lastPathComponent.isEmpty ? "/" : component.lastPathComponent)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Color(hex: "666666"))
+                                }
+                                .buttonStyle(.plain)
+                                
+                                if component != audioEngine.currentDirectory {
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(Color(hex: "444444"))
+                                }
                             }
                         }
+                        .padding(.horizontal, 12)
+                    }
+                    .frame(height: 20)
+                } else {
+                    // Cache info bar
+                    HStack {
+                        Text("\(cachedItems.count) cached analysis\(cachedItems.count == 1 ? "" : "es")")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color(hex: "666666"))
+                        Spacer()
                     }
                     .padding(.horizontal, 12)
+                    .frame(height: 20)
                 }
-                .frame(height: 20)
             }
             .background(Color(hex: "252525"))
             
@@ -139,8 +178,11 @@ struct FileBrowserView: View {
                             .padding(.bottom, 6)
                         
                         ForEach(quickAccessLocations) { location in
-                            QuickAccessRowView(item: location) {
-                                audioEngine.currentDirectory = location.url
+                            QuickAccessRowView(
+                                item: location,
+                                isSelected: location.isSpecial && isShowingCache
+                            ) {
+                                handleQuickAccessTap(location)
                             }
                         }
                         
@@ -149,14 +191,39 @@ struct FileBrowserView: View {
                             .padding(.vertical, 8)
                     }
                     
-                    // Current directory contents
-                    ForEach(directoryContents) { item in
-                        FileRowView(
-                            item: item,
-                            isSelected: selectedFile == item.url,
-                            onSingleClick: { selectFile(item) },
-                            onDoubleClick: { openItem(item) }
-                        )
+                    // Content: either cache items or directory contents
+                    if isShowingCache {
+                        if cachedItems.isEmpty {
+                            VStack(spacing: 8) {
+                                Image(systemName: "tray")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(Color(hex: "444444"))
+                                Text("No cached analyses")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(Color(hex: "666666"))
+                                Text("Analyzed files will appear here")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Color(hex: "555555"))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 40)
+                        } else {
+                            ForEach(cachedItems) { item in
+                                CachedFileRowView(item: item) {
+                                    loadCachedItem(item)
+                                }
+                            }
+                        }
+                    } else {
+                        // Current directory contents
+                        ForEach(directoryContents) { item in
+                            FileRowView(
+                                item: item,
+                                isSelected: selectedFile == item.url,
+                                onSingleClick: { selectFile(item) },
+                                onDoubleClick: { openItem(item) }
+                            )
+                        }
                     }
                 }
             }
@@ -164,9 +231,17 @@ struct FileBrowserView: View {
         }
         .onAppear {
             loadQuickAccessLocations()
-            loadDirectory()
+            if isShowingCache {
+                loadCachedFiles()
+            } else {
+                loadDirectory()
+            }
         }
-        .onChange(of: audioEngine.currentDirectory) { _ in loadDirectory() }
+        .onChange(of: audioEngine.currentDirectory) { _ in
+            if !isShowingCache {
+                loadDirectory()
+            }
+        }
     }
     
     func loadQuickAccessLocations() {
@@ -201,6 +276,9 @@ struct FileBrowserView: View {
             locations.append(QuickAccessItem(name: "Music", icon: "music.note", url: music))
         }
         
+        // Cache (special item)
+        locations.append(QuickAccessItem(name: "Cache", icon: "archivebox.fill", isSpecial: true))
+        
         // Cloud Storage (Google Drive, iCloud, Dropbox, OneDrive)
         let cloudStorage = home.appendingPathComponent("Library/CloudStorage")
         if let cloudContents = try? fm.contentsOfDirectory(at: cloudStorage, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
@@ -228,6 +306,45 @@ struct FileBrowserView: View {
         }
         
         quickAccessLocations = locations
+    }
+    
+    func handleQuickAccessTap(_ location: QuickAccessItem) {
+        if location.isSpecial && location.name == "Cache" {
+            isShowingCache = true
+            loadCachedFiles()
+        } else if let url = location.url {
+            isShowingCache = false
+            audioEngine.currentDirectory = url
+        }
+    }
+    
+    func loadCachedFiles() {
+        cachedItems = CacheManager.shared.getAllCachedFiles().map { metadata, key in
+            CachedFileItem(
+                originalPath: metadata.originalPath,
+                fileName: URL(fileURLWithPath: metadata.originalPath).lastPathComponent,
+                stemCount: metadata.stemNames.count,
+                duration: metadata.duration,
+                createdAt: metadata.createdAt,
+                cacheKey: key
+            )
+        }.sorted { $0.createdAt > $1.createdAt }
+    }
+    
+    func loadCachedItem(_ item: CachedFileItem) {
+        let originalURL = URL(fileURLWithPath: item.originalPath)
+        // Check if original file still exists
+        if FileManager.default.fileExists(atPath: item.originalPath) {
+            audioEngine.loadFile(url: originalURL)
+        } else {
+            // Try to load from cache directly even if original doesn't exist
+            audioEngine.loadFromCacheKey(item.cacheKey)
+        }
+    }
+    
+    func clearAllCache() {
+        CacheManager.shared.clearAllCache()
+        loadCachedFiles()
     }
     
     var pathComponents: [URL] {
@@ -276,8 +393,13 @@ struct FileBrowserView: View {
     }
     
     func navigateUp() {
-        let parent = audioEngine.currentDirectory.deletingLastPathComponent()
-        audioEngine.currentDirectory = parent
+        if isShowingCache {
+            isShowingCache = false
+            loadDirectory()
+        } else {
+            let parent = audioEngine.currentDirectory.deletingLastPathComponent()
+            audioEngine.currentDirectory = parent
+        }
     }
     
     func navigateTo(_ url: URL) {
@@ -300,13 +422,14 @@ struct FileBrowserView: View {
 
 struct QuickAccessRowView: View {
     let item: FileBrowserView.QuickAccessItem
+    var isSelected: Bool = false
     let onTap: () -> Void
     
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: item.icon)
                 .font(.system(size: 12))
-                .foregroundColor(Color(hex: "0a84ff"))
+                .foregroundColor(item.isSpecial ? Color(hex: "ff9f0a") : Color(hex: "0a84ff"))
                 .frame(width: 18)
             
             Text(item.name)
@@ -318,8 +441,63 @@ struct QuickAccessRowView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
+        .background(isSelected ? Color(hex: "0a84ff").opacity(0.2) : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
+    }
+}
+
+struct CachedFileRowView: View {
+    let item: FileBrowserView.CachedFileItem
+    let onTap: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "waveform.circle.fill")
+                .font(.system(size: 14))
+                .foregroundColor(Color(hex: "30d158"))
+                .frame(width: 18)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.fileName)
+                    .font(.system(size: 12))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                
+                HStack(spacing: 8) {
+                    Text("\(item.stemCount) stems")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(hex: "888888"))
+                    
+                    Text(formatDuration(item.duration))
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(hex: "666666"))
+                    
+                    Text(formatDate(item.createdAt))
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(hex: "555555"))
+                }
+            }
+            
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
+    }
+    
+    func formatDuration(_ seconds: Double) -> String {
+        let mins = Int(seconds) / 60
+        let secs = Int(seconds) % 60
+        return String(format: "%d:%02d", mins, secs)
+    }
+    
+    func formatDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
 
@@ -759,8 +937,6 @@ struct DropZoneView: View {
     @EnvironmentObject var audioEngine: AudioEngine
     @State private var isDragOver = false
     
-    let componentOptions = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]
-    
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -782,11 +958,9 @@ struct DropZoneView: View {
                             .font(.system(size: 14))
                             .foregroundColor(Color(hex: "888888"))
                         
-                        if audioEngine.separationMode == .demucs {
-                            Text("Demucs may take several minutes on first run")
-                                .font(.system(size: 11))
-                                .foregroundColor(Color(hex: "666666"))
-                        }
+                        Text("Demucs may take several minutes on first run")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "666666"))
                     }
                 } else {
                     ZStack {
@@ -826,56 +1000,6 @@ struct DropZoneView: View {
                     .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
                         handleDrop(providers: providers)
                     }
-                    
-                    // Mode selector
-                    VStack(spacing: 12) {
-                        HStack(spacing: 12) {
-                            Text("Mode:")
-                                .font(.system(size: 12))
-                                .foregroundColor(Color(hex: "888888"))
-                            
-                            Picker("", selection: $audioEngine.separationMode) {
-                                ForEach(SeparationMode.allCases, id: \.self) { mode in
-                                    Text(mode.rawValue).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(width: 180)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color(hex: "333333"))
-                            )
-                        }
-                        
-                        // Show component count only for PCA mode
-                        if audioEngine.separationMode == .pca {
-                            HStack(spacing: 12) {
-                                Text("Components:")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(Color(hex: "888888"))
-                                
-                                Picker("", selection: $audioEngine.selectedComponentCount) {
-                                    ForEach(componentOptions, id: \.self) { count in
-                                        Text("\(count)").tag(count)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(width: 80)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color(hex: "333333"))
-                                )
-                            }
-                        }
-                        
-                        // Mode description
-                        Text(modeDescription)
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(hex: "666666"))
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 350)
-                    }
-                    .padding(.top, 8)
                 }
             }
             
@@ -889,15 +1013,6 @@ struct DropZoneView: View {
                 endPoint: .bottom
             )
         )
-    }
-    
-    var modeDescription: String {
-        switch audioEngine.separationMode {
-        case .demucs:
-            return "Separates into: Drums, Bass, Vocals, Guitar, Keys, Other\nRequires Python & ~4GB download on first run"
-        case .pca:
-            return "Separates by spectral patterns (experimental)"
-        }
     }
     
     func handleDrop(providers: [NSItemProvider]) -> Bool {
@@ -921,8 +1036,6 @@ struct DropZoneView: View {
 // MARK: - Pre-Analysis View (file loaded but not analyzed)
 struct PreAnalysisView: View {
     @EnvironmentObject var audioEngine: AudioEngine
-    
-    let componentOptions = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]
     
     var body: some View {
         VStack(spacing: 0) {
@@ -950,61 +1063,17 @@ struct PreAnalysisView: View {
                             .font(.system(size: 14))
                             .foregroundColor(Color(hex: "888888"))
                         
-                        if audioEngine.separationMode == .demucs {
-                            Text("Demucs may take several minutes on first run")
-                                .font(.system(size: 11))
-                                .foregroundColor(Color(hex: "666666"))
-                        }
-                    }
-                } else {
-                    // Mode selector
-                    VStack(spacing: 16) {
-                        HStack(spacing: 12) {
-                            Text("Mode:")
-                                .font(.system(size: 13))
-                                .foregroundColor(Color(hex: "888888"))
-                            
-                            Picker("", selection: $audioEngine.separationMode) {
-                                ForEach(SeparationMode.allCases, id: \.self) { mode in
-                                    Text(mode.rawValue).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(width: 180)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color(hex: "333333"))
-                            )
-                        }
-                        
-                        // Show component count only for PCA mode
-                        if audioEngine.separationMode == .pca {
-                            HStack(spacing: 12) {
-                                Text("Components:")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(Color(hex: "888888"))
-                                
-                                Picker("", selection: $audioEngine.selectedComponentCount) {
-                                    ForEach(componentOptions, id: \.self) { count in
-                                        Text("\(count)").tag(count)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(width: 80)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color(hex: "333333"))
-                                )
-                            }
-                        }
-                        
-                        // Mode description
-                        Text(modeDescription)
+                        Text("Demucs may take several minutes on first run")
                             .font(.system(size: 11))
                             .foregroundColor(Color(hex: "666666"))
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 400)
                     }
+                } else {
+                    // Info text
+                    Text("Separates into: Drums, Bass, Vocals, Guitar, Keys, Other\nRequires Python & ~4GB download on first run")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(hex: "666666"))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
                     
                     // Analyze button
                     Button(action: { audioEngine.analyze() }) {
@@ -1047,15 +1116,6 @@ struct PreAnalysisView: View {
                 endPoint: .bottom
             )
         )
-    }
-    
-    var modeDescription: String {
-        switch audioEngine.separationMode {
-        case .demucs:
-            return "Separates into: Drums, Bass, Vocals, Guitar, Keys, Other\nRequires Python & ~4GB download on first run"
-        case .pca:
-            return "Separates by spectral patterns (experimental)"
-        }
     }
 }
 
@@ -1226,8 +1286,34 @@ struct MixerView: View {
             // Channel strips - centered with spacing
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
-                    ForEach(0..<audioEngine.componentCount, id: \.self) { index in
+                    // All channels except the last one (Other)
+                    ForEach(0..<max(0, audioEngine.componentCount - 1), id: \.self) { index in
                         ChannelStripView(index: index)
+                    }
+                    
+                    // Mixer control buttons (stacked vertically, to the left of Other)
+                    if audioEngine.componentCount > 0 {
+                        VStack(spacing: 8) {
+                            Spacer()
+                            
+                            Button(action: { audioEngine.zeroAllFaders() }) {
+                                Text("All 0")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .buttonStyle(SecondaryToolbarButtonStyle())
+                            
+                            Button(action: { audioEngine.resetAllFaders() }) {
+                                Text("Reset")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .buttonStyle(SecondaryToolbarButtonStyle())
+                            
+                            Spacer()
+                        }
+                        .frame(width: 60)
+                        
+                        // The last channel (Other)
+                        ChannelStripView(index: audioEngine.componentCount - 1)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -1235,34 +1321,6 @@ struct MixerView: View {
             }
             .frame(maxWidth: .infinity)
             .background(Color(hex: "1e1e1e"))
-            
-            // Mixer controls bar
-            HStack {
-                Spacer()
-                
-                HStack(spacing: 12) {
-                    Button(action: { audioEngine.zeroAllFaders() }) {
-                        Text("All 0")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .buttonStyle(SecondaryToolbarButtonStyle())
-                    
-                    Button(action: { audioEngine.resetAllFaders() }) {
-                        Text("Reset")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .buttonStyle(SecondaryToolbarButtonStyle())
-                }
-                .padding(.trailing, 20)
-            }
-            .frame(height: 40)
-            .background(Color(hex: "191919"))
-            .overlay(
-                Rectangle()
-                    .frame(height: 1)
-                    .foregroundColor(Color(hex: "333333")),
-                alignment: .top
-            )
         }
     }
 }
@@ -1459,10 +1517,10 @@ struct ChannelStripView: View {
     var stemIcon: String {
         switch stemName.lowercased() {
         case "drums":
-            return "oval.fill"
+            return "circle.fill"
         case "bass":
             return "guitars"
-        case "vocals":
+        case "vocals", "voice":
             return "mic"
         case "guitar":
             return "guitars"
@@ -1498,13 +1556,6 @@ struct ChannelStripView: View {
                     .foregroundColor(Color(hex: "9a9a9a"))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                
-                // Show variance only in PCA mode
-                if audioEngine.separationMode == .pca && index < audioEngine.varianceRatios.count {
-                    Text(String(format: "%.1f%%", audioEngine.varianceRatios[index]))
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundColor(Color(hex: "666666"))
-                }
             }
             .padding(.top, 8)
             

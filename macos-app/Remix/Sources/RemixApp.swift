@@ -39,6 +39,11 @@ struct RemixApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(!audioEngine.hasSession)
+                
+                Divider()
+                Button("Clear Cache...") {
+                    CacheManager.shared.clearAllCache()
+                }
             }
             
             CommandGroup(replacing: .pasteboard) {
