@@ -4,31 +4,17 @@ set -e
 # Build script for Remix macOS app
 # This script compiles the Rust library and builds the Swift macOS app
 #
-# Options:
-#   --no-models    Skip bundling Demucs models (smaller app, downloads on first use)
+# Requirements:
+#   - Rust (for building)
+#   - Xcode Command Line Tools (for Swift compilation)
+#   - Python 3 with demucs package (pip install demucs)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Parse arguments
-# Models are bundled by default, use --no-models to skip
-BUNDLE_MODELS=true
-for arg in "$@"; do
-    case $arg in
-        --no-models)
-            BUNDLE_MODELS=false
-            shift
-            ;;
-    esac
-done
-
 echo "=========================================="
-echo "Building Remix for macOS (Pure Rust)"
-if [ "$BUNDLE_MODELS" = true ]; then
-    echo "(with bundled Demucs ONNX model)"
-else
-    echo "(without models - will need manual download)"
-fi
+echo "Building Remix for macOS"
+echo "(uses Python demucs for stem separation)"
 echo "=========================================="
 
 # Detect architecture
@@ -166,43 +152,7 @@ echo "Step 4: Generating app icon..."
 "$SCRIPT_DIR/target/release/generate_icon"
 cp "$SCRIPT_DIR/scripts/Remix.icns" "$RESOURCES_DIR/"
 
-# Download and bundle ONNX model if requested
-if [ "$BUNDLE_MODELS" = true ]; then
-    echo ""
-    echo "Step 4b: Downloading/bundling Demucs ONNX model..."
-    MODELS_DIR="$RESOURCES_DIR/models"
-    mkdir -p "$MODELS_DIR"
-    
-    # Check if model already exists in project
-    if [ -f "$SCRIPT_DIR/models/htdemucs_6s.onnx" ]; then
-        echo "Using existing model from project directory"
-        cp "$SCRIPT_DIR/models/htdemucs_6s.onnx" "$MODELS_DIR/"
-    else
-        # Try to download
-        "$SCRIPT_DIR/target/release/download_models" -o "$MODELS_DIR" -m htdemucs_6s
-    fi
-    
-    if [ -f "$MODELS_DIR/htdemucs_6s.onnx" ]; then
-        echo "ONNX model bundled successfully"
-        MODELS_SIZE=$(du -sh "$MODELS_DIR" | cut -f1)
-        echo "Models directory size: $MODELS_SIZE"
-    else
-        echo ""
-        echo "================================================"
-        echo "NOTE: ONNX model not bundled"
-        echo ""
-        echo "To use stem separation, you need to convert the"
-        echo "Demucs model to ONNX format (one-time Python step):"
-        echo ""
-        echo "  mkdir -p models && cd models"
-        echo "  pip install demucs torch onnx"
-        echo "  python convert_demucs.py"
-        echo ""
-        echo "Then rebuild the app, or manually copy the model to:"
-        echo "  $MODELS_DIR/htdemucs_6s.onnx"
-        echo "================================================"
-    fi
-fi
+# Note: ONNX models no longer needed - app uses Python demucs subprocess
 
 # Sign the app (ad-hoc for local development)
 echo ""

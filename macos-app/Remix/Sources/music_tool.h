@@ -62,8 +62,9 @@ typedef struct {
     char* error;              // Error message (null if success)
 } SeparationResultFFI;
 
-// Load a Demucs ONNX model from file
-// Returns null on failure
+// Initialize Demucs (verifies Python and demucs package are available)
+// model_path is ignored (kept for API compatibility)
+// Returns null on failure if Python/demucs not available
 DemucsModelHandle* demucs_load_model(const char* model_path);
 
 // Free a Demucs model handle

@@ -275,6 +275,7 @@ class AudioEngine: ObservableObject {
     @Published var fileName: String?
     @Published var processingStatus: String = ""
     @Published var processingProgress: Double = 0
+    @Published var analysisStartTime: Date?
     @Published var currentDirectory: URL = FileManager.default.homeDirectoryForCurrentUser {
         didSet {
             // Persist the last used directory
@@ -717,6 +718,7 @@ class AudioEngine: ObservableObject {
             self.isProcessing = true
             self.processingStatus = "Starting..."
             self.processingProgress = 0
+            self.analysisStartTime = Date()
         }
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -735,36 +737,7 @@ class AudioEngine: ObservableObject {
     
     // MARK: - Demucs Processing
     
-    /// Find the ONNX model path in the app bundle or development location
-    private func findModelPath() -> String? {
-        // Check in app bundle Resources
-        if let bundlePath = Bundle.main.path(forResource: "htdemucs_6s", ofType: "onnx") {
-            return bundlePath
-        }
-        
-        // Check in Resources/models/
-        if let resourcePath = Bundle.main.resourcePath {
-            let modelsPath = (resourcePath as NSString).appendingPathComponent("models/htdemucs_6s.onnx")
-            if FileManager.default.fileExists(atPath: modelsPath) {
-                return modelsPath
-            }
-        }
-        
-        // Check in development location
-        let devPath = URL(fileURLWithPath: #file)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("models/htdemucs_6s.onnx")
-        if FileManager.default.fileExists(atPath: devPath.path) {
-            return devPath.path
-        }
-        
-        return nil
-    }
-    
-    /// Load the Demucs model (lazy loading on first use)
+    /// Initialize Demucs (verifies Python and demucs package are available)
     private func loadDemucsModel() -> Bool {
         // Already loaded?
         if demucsModel != nil {
@@ -776,17 +749,11 @@ class AudioEngine: ObservableObject {
             return false
         }
         
-        // Find model path
-        guard let modelPath = findModelPath() else {
-            modelLoadError = "Demucs ONNX model not found. Please ensure htdemucs_6s.onnx is in the app bundle."
-            return false
-        }
-        
-        // Load model
-        demucsModel = demucs_load_model(modelPath)
+        // Initialize demucs (model path is ignored, uses Python subprocess)
+        demucsModel = demucs_load_model(nil)
         
         if demucsModel == nil {
-            modelLoadError = "Failed to load Demucs model from: \(modelPath)"
+            modelLoadError = "Demucs not available. Please install Python 3 and run: pip install demucs"
             return false
         }
         
@@ -794,12 +761,12 @@ class AudioEngine: ObservableObject {
     }
     
     private func processWithDemucs(url: URL) {
-        updateStatus("Loading Demucs model...")
+        updateStatus("Initializing Demucs...")
         updateProgress(0)
         
-        // Load model if not already loaded
+        // Initialize demucs if not already done
         if !loadDemucsModel() {
-            handleError(modelLoadError ?? "Failed to load Demucs model")
+            handleError(modelLoadError ?? "Failed to initialize Demucs")
             return
         }
         
@@ -997,6 +964,7 @@ class AudioEngine: ObservableObject {
             self.isProcessing = false
             self.processingStatus = ""
             self.processingProgress = 1
+            self.analysisStartTime = nil
         }
     }
     
@@ -1094,6 +1062,7 @@ class AudioEngine: ObservableObject {
             self.isProcessing = false
             self.processingStatus = ""
             self.processingProgress = 0
+            self.analysisStartTime = nil
             self.errorMessage = message
         }
     }

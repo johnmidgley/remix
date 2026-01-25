@@ -944,10 +944,9 @@ struct DropZoneView: View {
             VStack(spacing: 20) {
                 if audioEngine.isProcessing {
                     VStack(spacing: 16) {
-                        if audioEngine.processingProgress > 0 {
-                            ProgressView(value: audioEngine.processingProgress)
-                                .progressViewStyle(LinearProgressViewStyle(tint: Color(hex: "0a84ff")))
-                                .frame(width: 260)
+                        // Elapsed time display
+                        if let startTime = audioEngine.analysisStartTime {
+                            AnalysisTimerView(startTime: startTime)
                         } else {
                             ProgressView()
                                 .scaleEffect(1.5)
@@ -1047,12 +1046,11 @@ struct PreAnalysisView: View {
             // Analysis options and button
             VStack(spacing: 24) {
                 if audioEngine.isProcessing {
-                    // Processing indicator
+                    // Processing indicator with elapsed time
                     VStack(spacing: 16) {
-                        if audioEngine.processingProgress > 0 {
-                            ProgressView(value: audioEngine.processingProgress)
-                                .progressViewStyle(LinearProgressViewStyle(tint: Color(hex: "0a84ff")))
-                                .frame(width: 260)
+                        // Elapsed time display
+                        if let startTime = audioEngine.analysisStartTime {
+                            AnalysisTimerView(startTime: startTime)
                         } else {
                             ProgressView()
                                 .scaleEffect(1.5)
@@ -1250,8 +1248,12 @@ struct MixerView: View {
                         ChannelStripView(index: index)
                     }
                     
-                    // Mixer control buttons (stacked vertically, to the left of Other)
+                    // The last channel (Other) followed by mixer control buttons
                     if audioEngine.componentCount > 0 {
+                        // The last channel (Other)
+                        ChannelStripView(index: audioEngine.componentCount - 1)
+                        
+                        // Mixer control buttons (stacked vertically, to the right of Other)
                         VStack(spacing: 8) {
                             Spacer()
                             
@@ -1270,9 +1272,6 @@ struct MixerView: View {
                             Spacer()
                         }
                         .frame(width: 60)
-                        
-                        // The last channel (Other)
-                        ChannelStripView(index: audioEngine.componentCount - 1)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -1689,6 +1688,33 @@ struct MasterChannelView: View {
         guard !audioEngine.meterLevels.isEmpty else { return 0 }
         let sum = audioEngine.meterLevels.reduce(0, +)
         return min(1.0, sum / Float(audioEngine.meterLevels.count) * 1.5)
+    }
+}
+
+// MARK: - Analysis Timer View
+struct AnalysisTimerView: View {
+    let startTime: Date
+    @State private var elapsedTime: TimeInterval = 0
+    
+    let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    
+    var body: some View {
+        Text(formatElapsedTime(elapsedTime))
+            .font(.system(size: 28, weight: .medium, design: .monospaced))
+            .foregroundColor(Color(hex: "30d158"))
+            .onReceive(timer) { _ in
+                elapsedTime = Date().timeIntervalSince(startTime)
+            }
+            .onAppear {
+                elapsedTime = Date().timeIntervalSince(startTime)
+            }
+    }
+    
+    func formatElapsedTime(_ interval: TimeInterval) -> String {
+        let totalSeconds = Int(interval)
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 }
 

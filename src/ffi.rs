@@ -150,31 +150,23 @@ pub struct SeparationResultFFI {
     pub error: *mut c_char,
 }
 
-/// Load a Demucs ONNX model from file
+/// Initialize Demucs (verifies Python and demucs package are available)
 /// 
 /// # Safety
-/// - `model_path` must be a valid null-terminated C string
-/// - Returns null on failure, check with demucs_get_last_error()
+/// - `model_path` is ignored (kept for API compatibility), can be null
+/// - Returns null on failure if Python/demucs not available
 #[no_mangle]
 pub unsafe extern "C" fn demucs_load_model(model_path: *const c_char) -> *mut DemucsModelHandle {
-    if model_path.is_null() {
-        return ptr::null_mut();
-    }
+    // model_path is ignored - we use Python subprocess now
+    let _ = model_path;
     
-    let path_str = match CStr::from_ptr(model_path).to_str() {
-        Ok(s) => s,
-        Err(_) => return ptr::null_mut(),
-    };
-    
-    let path = Path::new(path_str);
-    
-    match DemucsModel::load(path) {
+    match DemucsModel::new() {
         Ok(model) => {
             let handle = Box::new(DemucsModelHandle { model });
             Box::into_raw(handle)
         }
         Err(e) => {
-            eprintln!("Failed to load Demucs model: {}", e);
+            eprintln!("Failed to initialize Demucs: {}", e);
             ptr::null_mut()
         }
     }
