@@ -39,9 +39,28 @@ def check_and_install_deps():
     return True
 
 
+def find_bundled_model_dir():
+    """Find bundled models directory (in app bundle Resources or development location)."""
+    script_path = Path(__file__).resolve()
+    
+    # Check if running from app bundle: .app/Contents/Resources/demucs_separate.py
+    # Models would be at: .app/Contents/Resources/models/
+    resources_models = script_path.parent / "models"
+    if resources_models.exists():
+        return resources_models
+    
+    # Development location: scripts/demucs_separate.py -> models/
+    dev_models = script_path.parent.parent / "models"
+    if dev_models.exists():
+        return dev_models
+    
+    return None
+
+
 def separate_audio(input_path: str, output_dir: str, model: str = "htdemucs_6s"):
     """
     Separate audio using Demucs with soundfile backend.
+    Uses bundled models if available, otherwise downloads from internet.
     """
     import torch
     import torchaudio
@@ -78,11 +97,22 @@ def separate_audio(input_path: str, output_dir: str, model: str = "htdemucs_6s")
     
     print(f"Audio shape: {audio_tensor.shape}, sample rate: {sample_rate}", file=sys.stderr)
     
-    # Load demucs model
+    # Load demucs model - check for bundled models first
     from demucs.pretrained import get_model
     from demucs.apply import apply_model
     
+    bundled_dir = find_bundled_model_dir()
+    
     print(f"Loading model {model}...", file=sys.stderr)
+    
+    if bundled_dir:
+        # Check if bundled model exists
+        model_file = bundled_dir / f"{model}.th"
+        if model_file.exists():
+            print(f"Using bundled model from {bundled_dir}", file=sys.stderr)
+            # Set torch hub dir to use bundled models
+            os.environ['TORCH_HOME'] = str(bundled_dir.parent)
+    
     demucs_model = get_model(model)
     demucs_model.eval()
     

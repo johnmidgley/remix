@@ -3,12 +3,33 @@ set -e
 
 # Build script for Remix macOS app
 # This script compiles the Rust library and builds the Swift macOS app
+#
+# Options:
+#   --no-models    Skip bundling Demucs models (smaller app, but requires
+#                  ~4GB download on first use)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Parse arguments
+# Models are bundled by default, use --no-models to skip
+BUNDLE_MODELS=true
+for arg in "$@"; do
+    case $arg in
+        --no-models)
+            BUNDLE_MODELS=false
+            shift
+            ;;
+    esac
+done
+
 echo "=========================================="
 echo "Building Remix for macOS"
+if [ "$BUNDLE_MODELS" = true ]; then
+    echo "(with bundled Demucs models)"
+else
+    echo "(without models - will download on first use)"
+fi
 echo "=========================================="
 
 # Detect architecture
@@ -147,10 +168,34 @@ cp "$SCRIPT_DIR/scripts/demucs_separate.py" "$RESOURCES_DIR/"
 python3 "$SCRIPT_DIR/scripts/generate_app_icon.py"
 cp "$SCRIPT_DIR/scripts/Remix.icns" "$RESOURCES_DIR/"
 
+# Download and bundle models if requested
+if [ "$BUNDLE_MODELS" = true ]; then
+    echo ""
+    echo "Step 4b: Downloading and bundling Demucs models..."
+    MODELS_DIR="$RESOURCES_DIR/models"
+    mkdir -p "$MODELS_DIR"
+    
+    # Run the download script
+    python3 "$SCRIPT_DIR/scripts/download_models.py" -o "$MODELS_DIR" -m htdemucs_6s
+    
+    if [ $? -eq 0 ]; then
+        echo "Models bundled successfully"
+        # Show size
+        MODELS_SIZE=$(du -sh "$MODELS_DIR" | cut -f1)
+        echo "Models directory size: $MODELS_SIZE"
+    else
+        echo "Warning: Failed to download models, app will download on first use"
+    fi
+fi
+
 # Sign the app (ad-hoc for local development)
 echo ""
 echo "Step 5: Signing application..."
 codesign --force --deep --sign - "$APP_BUNDLE"
+
+# Calculate final app size
+APP_SIZE=$(du -sh "$APP_BUNDLE" | cut -f1)
+echo "App size: $APP_SIZE"
 
 echo ""
 echo "=========================================="

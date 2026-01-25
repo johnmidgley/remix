@@ -48,4 +48,7 @@ Package.resolved
 # Generated files
 *.icns
 
+# Downloaded models (generated during build with --with-models)
+/models/
+
 *.mp3

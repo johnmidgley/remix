@@ -19,8 +19,14 @@ Audio stem separation tool with a native macOS mixer interface. Supports AI-powe
 ### Building
 
 ```bash
+# Standard build (includes bundled Demucs models)
 ./build-macos-app.sh
+
+# Build without models (smaller app, downloads on first use)
+./build-macos-app.sh --no-models
 ```
+
+By default, the build script pre-downloads the Demucs AI model (~80MB) and bundles it with the app. This eliminates the model download for end users. Use `--no-models` for a smaller app that downloads models on first use.
 
 ### Running
 
@@ -31,7 +37,8 @@ open "Remix.app"
 ### Requirements for Demucs Mode
 
 - **Python 3** (installed at `/usr/bin/python3`, `/usr/local/bin/python3`, or `/opt/homebrew/bin/python3`)
-- **Demucs** will be auto-installed on first use (~4GB download)
+- **Demucs** will be auto-installed on first use (~4GB download for Python packages)
+- If built with `--with-models`, the AI model is pre-bundled (~80MB saved)
 - First separation takes several minutes; subsequent runs are faster
 
 ### Using the App
