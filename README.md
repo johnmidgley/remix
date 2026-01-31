@@ -84,6 +84,36 @@ The app is built with:
 - **Swift/SwiftUI**: Native macOS user interface
 - **Python/Demucs**: AI-powered stem separation (called as subprocess)
 
+## Troubleshooting
+
+### PyTorch 2.8.0 Compatibility Issue
+
+If you see an error like:
+```
+RuntimeError: unsupported operation: more than one element of the written-to tensor 
+refers to a single memory location. Please clone() the tensor before performing the operation.
+```
+
+This is due to stricter memory overlap checks in PyTorch 2.8.0. To fix:
+
+**Automatic Fix (Recommended):**
+```bash
+python3 -c "import os; path = os.path.expanduser('~/Library/Python/3.9/lib/python/site-packages/demucs/separate.py'); content = open(path).read(); content = content.replace('wav -= ref.mean()', 'wav = wav - ref.mean()').replace('wav /= ref.std()', 'wav = wav / ref.std()'); open(path, 'w').write(content)"
+```
+
+**Manual Fix:**
+Edit your demucs installation file (typically `~/Library/Python/3.9/lib/python/site-packages/demucs/separate.py`):
+
+Line 171: Change `wav -= ref.mean()` to `wav = wav - ref.mean()`  
+Line 172: Change `wav /= ref.std()` to `wav = wav / ref.std()`
+
+**Alternative:** Downgrade PyTorch (not recommended):
+```bash
+pip install torch==2.5.0
+```
+
+**Note:** This patch needs to be reapplied if you upgrade/reinstall demucs. The demucs maintainers will likely fix this in a future release.
+
 ## Notes
 
 - Processing time: ~2-5 minutes for a typical 3-4 minute song

@@ -341,3 +341,4 @@ pub extern "C" fn demucs_stem_name(index: c_uint) -> *const c_char {
         ptr::null()
     }
 }
+
