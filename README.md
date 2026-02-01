@@ -22,6 +22,7 @@ Audio stem separation tool with a native macOS mixer interface. Uses AI-powered 
 - **Intelligent Caching**: Fast reload of previously analyzed files
 - **Real-time Mixing**: Adjust volume levels for each stem with faders
 - **Playback Controls**: Variable speed (0.5x-2x) and pitch shift (±2 semitones)
+  - Settings remembered per song
 - **Solo/Mute**: Isolate or mute individual stems
 - **Pan Control**: Position each stem in the stereo field
 - **Export**: Bounce your custom mix to a WAV file
@@ -156,6 +157,8 @@ pip install torch==2.5.0
   - App learns your machine's speed and provides accurate estimates
   - First analysis may be slower while downloading the model
 - **Smart caching**: Previously analyzed files load instantly from cache
+- **Per-song settings**: Speed, pitch, and loop settings are saved individually for each song
+  - Return to any song and your preferred playback settings are restored
 - **Supported formats**: WAV and MP3 input; output is always WAV
 - **First run**: Downloads Demucs model (~1GB)
 - **Progress tracking**: Real-time progress bar with time-remaining estimates

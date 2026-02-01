@@ -269,7 +269,11 @@ class AudioEngine: ObservableObject {
     @Published var sampleRate: UInt32 = 44100
     @Published var isProcessing: Bool = false
     @Published var isPlaying: Bool = false
-    @Published var isLooping: Bool = false
+    @Published var isLooping: Bool = false {
+        didSet {
+            saveCurrentSongSettings()
+        }
+    }
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
     @Published var errorMessage: String?
@@ -285,9 +289,21 @@ class AudioEngine: ObservableObject {
             UserDefaults.standard.set(currentDirectory.path, forKey: "lastDirectory")
         }
     }
-    @Published var showFileBrowser: Bool = true
-    @Published var playbackRate: Float = 1.0
-    @Published var pitch: Float = 0.0  // Pitch shift in cents (-200 to +200)
+    @Published var showFileBrowser: Bool = true {
+        didSet {
+            UserDefaults.standard.set(showFileBrowser, forKey: "showFileBrowser")
+        }
+    }
+    @Published var playbackRate: Float = 1.0 {
+        didSet {
+            saveCurrentSongSettings()
+        }
+    }
+    @Published var pitch: Float = 0.0 {  // Pitch shift in cents (-200 to +200)
+        didSet {
+            saveCurrentSongSettings()
+        }
+    }
     @Published var waveformSamples: [Float] = []
     @Published var selectionStart: Double = 0
     @Published var selectionEnd: Double = 0
@@ -348,6 +364,17 @@ class AudioEngine: ObservableObject {
     }
     private var progressTimer: Timer?
     
+    // Per-song settings storage
+    struct SongSettings: Codable {
+        var playbackRate: Float = 1.0
+        var pitch: Float = 0.0
+        var isLooping: Bool = false
+    }
+    
+    private var currentSongKey: String? {
+        currentInputURL?.path
+    }
+    
     // MARK: - Initialization
     init() {
         // Restore last used directory if available
@@ -364,6 +391,61 @@ class AudioEngine: ObservableObject {
         }
         
         setupAudioEngine()
+        
+        // Restore global UI settings only
+        restoreGlobalSettings()
+    }
+    
+    private func restoreGlobalSettings() {
+        let defaults = UserDefaults.standard
+        
+        // Restore sidebar visibility (global UI setting)
+        if defaults.object(forKey: "showFileBrowser") != nil {
+            showFileBrowser = defaults.bool(forKey: "showFileBrowser")
+        }
+    }
+    
+    private func saveCurrentSongSettings() {
+        guard let songKey = currentSongKey else { return }
+        
+        let settings = SongSettings(
+            playbackRate: playbackRate,
+            pitch: pitch,
+            isLooping: isLooping
+        )
+        
+        if let encoded = try? JSONEncoder().encode(settings) {
+            UserDefaults.standard.set(encoded, forKey: "song_settings_\(songKey)")
+        }
+    }
+    
+    private func loadSongSettings() {
+        guard let songKey = currentSongKey else {
+            // Reset to defaults if no song
+            playbackRate = 1.0
+            pitch = 0.0
+            isLooping = false
+            timePitchNode?.rate = 1.0
+            timePitchNode?.pitch = 0.0
+            return
+        }
+        
+        // Try to load saved settings for this song
+        if let data = UserDefaults.standard.data(forKey: "song_settings_\(songKey)"),
+           let settings = try? JSONDecoder().decode(SongSettings.self, from: data) {
+            playbackRate = settings.playbackRate
+            pitch = settings.pitch
+            isLooping = settings.isLooping
+            timePitchNode?.rate = settings.playbackRate
+            timePitchNode?.pitch = settings.pitch
+        } else {
+            // Use defaults for new song
+            playbackRate = 1.0
+            pitch = 0.0
+            isLooping = false
+            timePitchNode?.rate = 1.0
+            timePitchNode?.pitch = 0.0
+        }
     }
     
     deinit {
@@ -424,6 +506,9 @@ class AudioEngine: ObservableObject {
             self.fileName = url.lastPathComponent
             self.hasCachedAnalysis = hasCache
             self.loadedFromCache = false
+            
+            // Load settings for this song
+            self.loadSongSettings()
         }
         
         // Auto-load from cache if available, otherwise load original for preview
@@ -453,12 +538,18 @@ class AudioEngine: ObservableObject {
         
         cleanup()
         
+        // Set the input URL for settings tracking
+        currentInputURL = URL(fileURLWithPath: metadata.originalPath)
+        
         DispatchQueue.main.async {
             self.fileName = URL(fileURLWithPath: metadata.originalPath).lastPathComponent
             self.isProcessing = true
             self.processingStatus = "Loading from cache..."
             self.processingProgress = 0.5
             self.estimatedTimeRemaining = 0
+            
+            // Load settings for this song
+            self.loadSongSettings()
         }
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1782,5 +1873,8 @@ class AudioEngine: ObservableObject {
         processingProgress = 0
         estimatedTimeRemaining = 0
         estimatedTotalTime = 0
+        
+        // Clear current input URL (this will prevent saving settings after cleanup)
+        currentInputURL = nil
     }
 }
