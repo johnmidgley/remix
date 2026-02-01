@@ -5,6 +5,10 @@
 
 Audio stem separation tool with a native macOS mixer interface. Uses AI-powered Demucs for professional-quality instrument separation.
 
+<div align="center">
+  <img src="Remix UI.png" alt="Remix UI" width="800">
+</div>
+
 ## Features
 
 - **AI Instrument Separation**: Splits audio into 6 stems using Demucs:
