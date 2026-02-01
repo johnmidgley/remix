@@ -65,19 +65,20 @@ That's it! You're now remixing. 🎵
 
 ## Native macOS App
 
-### Requirements
+### Build Requirements (Your Machine Only)
 
-- **Rust** (for building)
+- **Rust** (for building the Rust library)
 - **Xcode Command Line Tools** (for Swift compilation)
-- **Python 3.8+** (the build script will check for and offer to install required packages)
+- **Python 3.8+** (for creating the bundled Python distribution)
 
-**Note:** The build script will automatically detect and offer to install the required Python package:
-- `demucs` - AI-powered stem separation
+**Note:** These are only needed to BUILD the app. The resulting app is fully standalone with no user dependencies.
 
-Or install manually:
-```bash
-pip install demucs
-```
+The build script automatically:
+1. Compiles the Rust and Swift code
+2. Bundles Python + demucs into the app
+3. Creates a fully standalone `Remix.app`
+
+**Users need nothing** - they just download and run Remix.app!
 
 ### Building
 
@@ -163,52 +164,76 @@ Demucs v4 uses a hybrid transformer architecture:
 3. Trained on MUSDB18-HQ + 800 additional songs
 4. Achieves 9.0+ dB SDR (Signal-to-Distortion Ratio)
 
+## License
+
+Remix application code is licensed under the **Apache License 2.0** (see [LICENSE](LICENSE)).
+
+### Third-Party Software
+
+This application includes the following open-source software:
+
+- **Demucs** - MIT License (Meta Platforms, Inc.) - AI music separation
+- **PyTorch** - BSD-3-Clause License (Meta Platforms, Inc.) - Deep learning framework
+- **Python** - Python Software Foundation License - Bundled runtime
+- **Rust libraries** (hound, symphonia, anyhow, etc.) - Various open-source licenses
+
+See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for complete licensing information.
+
+### Commercial Use
+
+✅ **You may use Remix commercially** under the terms of the Apache 2.0 license.  
+✅ **Demucs (MIT License) permits commercial use** with proper attribution.
+
+All required license files are included in the app bundle.
+
 ## Architecture
 
 The app is built with:
-- **Rust**: Audio processing and FFI layer
+- **Rust**: Audio processing, FFI layer, and Python integration
 - **Swift/SwiftUI**: Native macOS user interface
-- **Python/Demucs**: AI-powered stem separation (called as subprocess)
+- **Bundled Python**: Complete Python runtime + demucs packaged in the app
+- **Demucs v4**: Full-quality AI model for stem separation (6 stems)
 
-## Troubleshooting
+## Standalone App - Zero User Dependencies!
 
-### PyTorch 2.8.0 Compatibility Issue
+Remix is **fully standalone** - users just download and run:
 
-If you see an error like:
-```
-RuntimeError: unsupported operation: more than one element of the written-to tensor 
-refers to a single memory location. Please clone() the tensor before performing the operation.
-```
+✅ **No Python installation required**  
+✅ **No pip packages needed**  
+✅ **All dependencies bundled in the app**  
+✅ **Works on any macOS system out of the box**  
+✅ **Professional-quality AI with full Demucs v4**
 
-This is due to stricter memory overlap checks in PyTorch 2.8.0. To fix:
+The app bundles everything it needs:
+- Python runtime (~50MB)
+- Demucs + dependencies (~200MB)
+- PyTorch and torchaudio
+- All audio processing libraries
+- Native Swift UI
 
-**Automatic Fix (Recommended):**
-```bash
-python3 -c "import os; path = os.path.expanduser('~/Library/Python/3.9/lib/python/site-packages/demucs/separate.py'); content = open(path).read(); content = content.replace('wav -= ref.mean()', 'wav = wav - ref.mean()').replace('wav /= ref.std()', 'wav = wav / ref.std()'); open(path, 'w').write(content)"
-```
+Simply copy `Remix.app` to any Mac and it works - no setup required!
 
-**Manual Fix:**
-Edit your demucs installation file (typically `~/Library/Python/3.9/lib/python/site-packages/demucs/separate.py`):
+**App size**: ~300-500MB (comparable to professional audio software)
 
-Line 171: Change `wav -= ref.mean()` to `wav = wav - ref.mean()`  
-Line 172: Change `wav /= ref.std()` to `wav = wav / ref.std()`
+## Technical Details
 
-**Alternative:** Downgrade PyTorch (not recommended):
-```bash
-pip install torch==2.5.0
-```
+### Bundled Python Distribution
+The app uses a minimal Python distribution bundled inside the app bundle:
+- **Build time**: Script creates isolated Python environment with demucs
+- **Runtime**: App automatically uses bundled Python (invisible to users)
+- **Size optimization**: Unnecessary files pruned (~200-300MB final bundle)
+- **Zero interference**: Doesn't affect system Python installation
 
-**Note:** This patch needs to be reapplied if you upgrade/reinstall demucs. The demucs maintainers will likely fix this in a future release.
+See [BUNDLED_PYTHON.md](BUNDLED_PYTHON.md) and [BUILD_STANDALONE.md](BUILD_STANDALONE.md) for details.
 
-## Notes
-
+### Performance Notes
 - **Processing time**: Varies by machine (typically 1-5 minutes per minute of audio)
   - App learns your machine's speed and provides accurate estimates
-  - First analysis may be slower while downloading the model
+  - First run downloads the AI model (~350MB) automatically
 - **Smart caching**: Previously analyzed files load instantly from cache
 - **Per-song settings**: Speed, pitch, loop, and EQ settings are saved individually for each song
   - Return to any song and your preferred playback and EQ settings are restored
   - Each stem can have unique EQ curves that are remembered
 - **Supported formats**: WAV and MP3 input; output is always WAV
-- **First run**: Downloads Demucs model (~1GB)
 - **Progress tracking**: Real-time progress bar with time-remaining estimates
+- **Model storage**: Demucs model cached in `~/.cache/torch/hub/checkpoints/`

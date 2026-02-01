@@ -25,9 +25,29 @@ pub struct SeparationResult {
     pub stems: Vec<(String, String)>, // (stem_name, stem_path)
 }
 
-/// Find Python executable
+/// Find Python executable (bundled or system)
 fn find_python() -> Result<String> {
-    // Try common Python executable names
+    // First, try to find bundled Python in app bundle
+    if let Ok(exe_path) = std::env::current_exe() {
+        // Get app bundle path (macOS: /path/to/Remix.app/Contents/MacOS/Remix)
+        if let Some(macos_dir) = exe_path.parent() {
+            if let Some(contents_dir) = macos_dir.parent() {
+                let bundled_python = contents_dir
+                    .join("Resources")
+                    .join("python")
+                    .join("bin")
+                    .join("python-wrapper.sh");
+                
+                if bundled_python.exists() {
+                    eprintln!("✓ Using bundled Python: {}", bundled_python.display());
+                    return Ok(bundled_python.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    
+    // Fall back to system Python
+    eprintln!("Bundled Python not found, trying system Python...");
     let candidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3"];
     
     for candidate in candidates {
@@ -36,12 +56,19 @@ fn find_python() -> Result<String> {
             .output()
         {
             if output.status.success() {
+                eprintln!("✓ Using system Python: {}", candidate);
                 return Ok(candidate.to_string());
             }
         }
     }
     
-    Err(anyhow!("Python not found. Please install Python 3 and the demucs package."))
+    Err(anyhow!(
+        "Python not found.\n\n\
+        The app should include a bundled Python distribution.\n\
+        If you're running from source, please install Python 3:\n\
+          brew install python3\n\
+          pip3 install demucs"
+    ))
 }
 
 /// Check if demucs is installed
@@ -69,7 +96,7 @@ pub struct DemucsModel {
 }
 
 impl DemucsModel {
-    /// Load/verify Demucs is available (no actual ONNX model needed)
+    /// Load/verify Demucs is available via bundled Python
     pub fn load(_model_path: &Path) -> Result<Self> {
         // Find Python
         let python = find_python()?;

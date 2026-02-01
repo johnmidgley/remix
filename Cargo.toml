@@ -1,11 +1,11 @@
 [package]
-name = "music-tool"
+name = "remix"
 version = "0.1.0"
 edition = "2021"
 description = "Audio stem separation tool"
 
 [lib]
-name = "music_tool"
+name = "remix"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
@@ -14,21 +14,9 @@ symphonia = { version = "0.5", features = ["mp3", "wav", "pcm"] }  # Audio decod
 anyhow = "1.0"             # Error handling
 libc = "0.2"               # C FFI types
 
-# ONNX Runtime for Demucs inference
-ort = { version = "2.0.0-rc.9", features = ["load-dynamic"] }
-ndarray = "0.16"           # Tensor operations
-rubato = "0.15"            # Audio resampling
-
 # For binaries
-image = "0.25"             # PNG generation for icons
-reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }  # Model download
-indicatif = "0.17"         # Progress bars
-sha2 = "0.10"              # Checksum verification
+image = "0.25"             # PNG generation for icon generator
 
 [[bin]]
 name = "generate_icon"
 path = "src/bin/generate_icon.rs"
-
-[[bin]]
-name = "download_models"
-path = "src/bin/download_models.rs"

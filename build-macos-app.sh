@@ -2,12 +2,15 @@
 set -e
 
 # Build script for Remix macOS app
-# This script compiles the Rust library and builds the Swift macOS app
+# This script compiles the Rust library and builds the Swift macOS app with bundled Python
 #
-# Requirements:
-#   - Rust (for building)
+# Build Requirements (your machine only):
+#   - Rust (for building the Rust library)
 #   - Xcode Command Line Tools (for Swift compilation)
-#   - Python 3 with demucs, librosa, and soundfile packages
+#   - Python 3.8+ (for creating the Python bundle)
+#
+# User Requirements (zero!):
+#   - Nothing! Python and demucs are bundled in the app
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -21,113 +24,18 @@ NC='\033[0m' # No Color
 
 echo "=========================================="
 echo "Building Remix for macOS"
-echo "(uses Python demucs for stem separation)"
+echo "(with bundled Python - fully standalone!)"
 echo "=========================================="
 
 # Detect architecture
 ARCH=$(uname -m)
 echo "Architecture: $ARCH"
 
-# Check Python dependencies
+# Python check (will be bundled automatically during build)
 echo ""
-echo "Checking Python dependencies..."
-echo "=========================================="
-
-# Find Python 3
-PYTHON_CMD=""
-for cmd in python3 python /usr/bin/python3 /usr/local/bin/python3; do
-    if command -v "$cmd" >/dev/null 2>&1; then
-        if "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)" 2>/dev/null; then
-            PYTHON_CMD="$cmd"
-            break
-        fi
-    fi
-done
-
-if [ -z "$PYTHON_CMD" ]; then
-    echo -e "${RED}✗ Python 3.8+ not found${NC}"
-    echo "  Please install Python 3: https://www.python.org/downloads/"
-    exit 1
-fi
-
-PYTHON_VERSION=$("$PYTHON_CMD" --version 2>&1 | cut -d' ' -f2)
-echo -e "${GREEN}✓ Python $PYTHON_VERSION found${NC} ($PYTHON_CMD)"
-
-# Find pip
-PIP_CMD=""
-for cmd in pip3 pip "$PYTHON_CMD -m pip"; do
-    if eval "$cmd --version" >/dev/null 2>&1; then
-        PIP_CMD="$cmd"
-        break
-    fi
-done
-
-if [ -z "$PIP_CMD" ]; then
-    echo -e "${RED}✗ pip not found${NC}"
-    echo "  Please install pip: https://pip.pypa.io/en/stable/installation/"
-    exit 1
-fi
-
-echo -e "${GREEN}✓ pip found${NC}"
-
-# Check required packages
-REQUIRED_PACKAGES=("demucs")
-MISSING_PACKAGES=()
-
-for package in "${REQUIRED_PACKAGES[@]}"; do
-    if "$PYTHON_CMD" -c "import $package" 2>/dev/null; then
-        PACKAGE_VERSION=$("$PYTHON_CMD" -c "import $package; print(getattr($package, '__version__', 'unknown'))" 2>/dev/null)
-        echo -e "${GREEN}✓ $package${NC} ($PACKAGE_VERSION)"
-    else
-        echo -e "${YELLOW}✗ $package not installed${NC}"
-        MISSING_PACKAGES+=("$package")
-    fi
-done
-
-# Install missing packages if any
-if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
-    echo ""
-    echo -e "${YELLOW}Missing required Python packages:${NC} ${MISSING_PACKAGES[*]}"
-    echo ""
-    read -p "Would you like to install them now? (y/n) " -n 1 -r
-    echo ""
-    
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${BLUE}Installing Python packages...${NC}"
-        $PIP_CMD install "${MISSING_PACKAGES[@]}"
-        
-        # Verify installation
-        echo ""
-        echo "Verifying installation..."
-        ALL_INSTALLED=true
-        for package in "${MISSING_PACKAGES[@]}"; do
-            if "$PYTHON_CMD" -c "import $package" 2>/dev/null; then
-                echo -e "${GREEN}✓ $package installed successfully${NC}"
-            else
-                echo -e "${RED}✗ Failed to install $package${NC}"
-                ALL_INSTALLED=false
-            fi
-        done
-        
-        if [ "$ALL_INSTALLED" = false ]; then
-            echo ""
-            echo -e "${RED}Some packages failed to install. Please install manually:${NC}"
-            echo "  $PIP_CMD install ${MISSING_PACKAGES[*]}"
-            exit 1
-        fi
-    else
-        echo ""
-        echo -e "${RED}Build cancelled.${NC} Please install required packages first:"
-        echo "  $PIP_CMD install ${MISSING_PACKAGES[*]}"
-        echo ""
-        echo "Then run this script again."
-        exit 1
-    fi
-fi
-
+echo "Python will be bundled automatically."
+echo "The app will be fully standalone with no user dependencies."
 echo ""
-echo -e "${GREEN}All Python dependencies satisfied!${NC}"
-echo "=========================================="
 
 # Build Rust library and binaries
 echo ""
@@ -135,8 +43,8 @@ echo "Step 1: Building Rust library and tools..."
 cargo build --release
 
 # Check if library was built
-if [ ! -f "target/release/libmusic_tool.a" ]; then
-    echo "Error: Rust library not found at target/release/libmusic_tool.a"
+if [ ! -f "target/release/libremix.a" ]; then
+    echo "Error: Rust library not found at target/release/libremix.a"
     exit 1
 fi
 echo "Rust library built successfully"
@@ -213,14 +121,15 @@ SWIFT_SOURCES=(
     "macos-app/Remix/Sources/RemixApp.swift"
     "macos-app/Remix/Sources/AudioEngine.swift"
     "macos-app/Remix/Sources/ContentView.swift"
+    "macos-app/Remix/Sources/LicensesView.swift"
 )
 
-HEADER_PATH="$SCRIPT_DIR/macos-app/Remix/Sources/music_tool.h"
+HEADER_PATH="$SCRIPT_DIR/macos-app/Remix/Sources/remix.h"
 LIB_PATH="$SCRIPT_DIR/target/release"
 
 # Remove the dylib temporarily to force static linking
-if [ -f "$LIB_PATH/libmusic_tool.dylib" ]; then
-    mv "$LIB_PATH/libmusic_tool.dylib" "$LIB_PATH/libmusic_tool.dylib.bak"
+if [ -f "$LIB_PATH/libremix.dylib" ]; then
+    mv "$LIB_PATH/libremix.dylib" "$LIB_PATH/libremix.dylib.bak"
 fi
 
 # Compile with swiftc (force static linking by removing dylib)
@@ -231,7 +140,7 @@ swiftc \
     -sdk $(xcrun --show-sdk-path --sdk macosx) \
     -import-objc-header "$HEADER_PATH" \
     -L "$LIB_PATH" \
-    -lmusic_tool \
+    -lremix \
     -framework AppKit \
     -framework SwiftUI \
     -framework AVFoundation \
@@ -243,8 +152,8 @@ swiftc \
 BUILD_RESULT=$?
 
 # Restore the dylib
-if [ -f "$LIB_PATH/libmusic_tool.dylib.bak" ]; then
-    mv "$LIB_PATH/libmusic_tool.dylib.bak" "$LIB_PATH/libmusic_tool.dylib"
+if [ -f "$LIB_PATH/libremix.dylib.bak" ]; then
+    mv "$LIB_PATH/libremix.dylib.bak" "$LIB_PATH/libremix.dylib"
 fi
 
 if [ $BUILD_RESULT -ne 0 ]; then
@@ -276,11 +185,25 @@ else
 fi
 cp "$ICNS_PATH" "$RESOURCES_DIR/"
 
-# Note: ONNX models no longer needed - app uses Python demucs subprocess
+# Copy license and attribution files
+echo "Copying license files..."
+cp "$SCRIPT_DIR/LICENSE" "$RESOURCES_DIR/"
+cp "$SCRIPT_DIR/THIRD_PARTY_LICENSES.md" "$RESOURCES_DIR/"
+cp "$SCRIPT_DIR/ABOUT.txt" "$RESOURCES_DIR/"
+
+# Bundle Python with the app
+echo ""
+echo "Step 5: Bundling Python..."
+"$SCRIPT_DIR/scripts/bundle_python.sh" "$APP_BUNDLE"
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}✗ Failed to bundle Python${NC}"
+    exit 1
+fi
 
 # Sign the app (ad-hoc for local development)
 echo ""
-echo "Step 5: Signing application..."
+echo "Step 6: Signing application..."
 codesign --force --deep --sign - "$APP_BUNDLE"
 
 # Calculate final app size

@@ -1,8 +1,8 @@
-// music_tool.h
+// remix.h
 // C FFI header for the Rust audio processing library
 
-#ifndef MUSIC_TOOL_H
-#define MUSIC_TOOL_H
+#ifndef REMIX_H
+#define REMIX_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -91,4 +91,4 @@ const char* demucs_stem_name(uint32_t index);
 }
 #endif
 
-#endif // MUSIC_TOOL_H
+#endif // REMIX_H

@@ -12,16 +12,16 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Remix",
-            dependencies: ["MusicToolLib"],
+            dependencies: ["RemixLib"],
             path: "Sources",
-            exclude: ["music_tool.h"],
+            exclude: ["remix.h"],
             swiftSettings: [
-                .unsafeFlags(["-import-objc-header", "Sources/music_tool.h"])
+                .unsafeFlags(["-import-objc-header", "Sources/remix.h"])
             ],
             linkerSettings: [
                 .unsafeFlags([
                     "-L../../target/release",
-                    "-lmusic_tool",
+                    "-lremix",
                     "-framework", "Accelerate",
                     "-framework", "AVFoundation",
                     "-framework", "CoreAudio"
@@ -29,7 +29,7 @@ let package = Package(
             ]
         ),
         .systemLibrary(
-            name: "MusicToolLib",
+            name: "RemixLib",
             path: ".",
             pkgConfig: nil,
             providers: nil

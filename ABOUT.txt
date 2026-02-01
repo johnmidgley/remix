@@ -1,0 +1,44 @@
+Remix - AI-Powered Music Stem Separation
+Version 1.0
+
+Copyright © 2024-2025
+
+ABOUT REMIX
+
+Remix is a native macOS application for separating music tracks into individual stems (instruments and vocals) using state-of-the-art AI technology.
+
+FEATURES
+• 6-stem separation: drums, bass, guitar, piano, vocals, other
+• Professional-quality AI model (Demucs v4)
+• Native macOS interface with SwiftUI
+• 8-band parametric EQ
+• Variable speed and pitch control
+• Real-time mixing and export
+
+AI TECHNOLOGY
+
+Remix uses Demucs v4 (Hybrid Transformer Demucs) developed by Meta AI Research for music source separation. Demucs achieves state-of-the-art quality with 9.0+ dB Signal-to-Distortion Ratio.
+
+LICENSE
+
+Remix application code is licensed under the Apache License 2.0.
+
+This application includes open-source software:
+• Demucs - MIT License (Meta Platforms, Inc.)
+• PyTorch - BSD-3-Clause License (Meta Platforms, Inc.)
+• Python - Python Software Foundation License
+• Various Rust libraries - see THIRD_PARTY_LICENSES.md
+
+For complete licensing information, see THIRD_PARTY_LICENSES.md included with this application.
+
+ATTRIBUTION
+
+Demucs v4: "Hybrid Transformers for Music Source Separation"
+by Simon Rouard, Francisco Massa, and Alexandre Défossez
+Meta AI Research, 2023
+
+NO WARRANTY
+
+THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+For support and more information, visit the project repository.
