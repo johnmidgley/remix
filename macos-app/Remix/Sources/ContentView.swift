@@ -673,6 +673,7 @@ struct TransportView: View {
         HStack(spacing: 16) {
             // Transport buttons
             HStack(spacing: 2) {
+                TransportButton(icon: "backward.end.fill", action: { audioEngine.seek(to: 0) })
                 TransportButton(icon: "stop.fill", action: { audioEngine.stopAndReset() })
                 TransportButton(
                     icon: audioEngine.isPlaying ? "pause.fill" : "play.fill",
