@@ -285,6 +285,7 @@ class AudioEngine: ObservableObject {
     }
     @Published var showFileBrowser: Bool = true
     @Published var playbackRate: Float = 1.0
+    @Published var pitch: Float = 0.0  // Pitch shift in cents (-200 to +200)
     @Published var waveformSamples: [Float] = []
     @Published var selectionStart: Double = 0
     @Published var selectionEnd: Double = 0
@@ -1405,6 +1406,11 @@ class AudioEngine: ObservableObject {
     func setPlaybackRate(_ rate: Float) {
         playbackRate = rate
         timePitchNode?.rate = rate
+    }
+    
+    func setPitch(_ cents: Float) {
+        pitch = max(-200, min(200, cents))
+        timePitchNode?.pitch = pitch
     }
 
     func setSelection(start: Double, end: Double) {

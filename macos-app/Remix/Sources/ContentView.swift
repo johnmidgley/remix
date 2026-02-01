@@ -575,7 +575,7 @@ struct ToolbarView: View {
     
     var body: some View {
         HStack(spacing: 0) {
-            // Left section - Sidebar toggle + File info
+            // Left section - Sidebar toggle
             HStack(spacing: 12) {
                 Button(action: { audioEngine.showFileBrowser.toggle() }) {
                     Image(systemName: "sidebar.left")
@@ -583,23 +583,24 @@ struct ToolbarView: View {
                         .foregroundColor(audioEngine.showFileBrowser ? Color(hex: "0a84ff") : Color(hex: "888888"))
                 }
                 .buttonStyle(.plain)
-                
-                if let fileName = audioEngine.fileName {
-                    Image(systemName: "waveform")
-                        .foregroundColor(Color(hex: "0a84ff"))
-                    Text(fileName)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                }
             }
             .frame(width: 220, alignment: .leading)
             .padding(.leading, 12)
             
             Spacer()
             
-            // Center - Transport
-            TransportView()
+            // Center - Song name + Transport
+            VStack(spacing: 12) {
+                if let fileName = audioEngine.fileName {
+                    Text(fileName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                
+                TransportView()
+            }
             
             Spacer()
             
@@ -625,6 +626,26 @@ struct ToolbarView: View {
                         }
                         .pickerStyle(.menu)
                         .frame(width: 70)
+                    }
+                    
+                    // Pitch control
+                    HStack(spacing: 4) {
+                        Image(systemName: "tuningfork")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "888888"))
+                        
+                        Picker("", selection: Binding(
+                            get: { audioEngine.pitch },
+                            set: { audioEngine.setPitch($0) }
+                        )) {
+                            Text("-2").tag(Float(-200))
+                            Text("-1").tag(Float(-100))
+                            Text("0").tag(Float(0))
+                            Text("+1").tag(Float(100))
+                            Text("+2").tag(Float(200))
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 60)
                     }
                 }
                 
