@@ -45,7 +45,7 @@ struct FileBrowserView: View {
     @State private var selectedFile: URL?
     @State private var selectedCacheKey: String?
     @State private var quickAccessLocations: [QuickAccessItem] = []
-    @State private var isShowingCache: Bool = true
+    @State private var isShowingCache: Bool = false
     @State private var cachedItems: [CachedFileItem] = []
     
     struct FileItem: Identifiable, Hashable {
@@ -98,67 +98,6 @@ struct FileBrowserView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Header with path and navigation
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Button(action: navigateUp) {
-                        Image(systemName: "chevron.up")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(Color(hex: "888888"))
-                    .disabled(isShowingCache || audioEngine.currentDirectory.path == "/")
-                    
-                    Text(isShowingCache ? "Cache" : audioEngine.currentDirectory.lastPathComponent)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                
-                // Breadcrumb path (hidden when showing cache)
-                if !isShowingCache {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
-                            ForEach(pathComponents, id: \.self) { component in
-                                Button(action: { navigateTo(component) }) {
-                                    Text(component.lastPathComponent.isEmpty ? "/" : component.lastPathComponent)
-                                        .font(.system(size: 10))
-                                        .foregroundColor(Color(hex: "666666"))
-                                }
-                                .buttonStyle(.plain)
-                                
-                                if component != audioEngine.currentDirectory {
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 8))
-                                        .foregroundColor(Color(hex: "444444"))
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                    }
-                    .frame(height: 20)
-                } else {
-                    // Cache info bar
-                    HStack {
-                        Text("\(cachedItems.count) cached analysis\(cachedItems.count == 1 ? "" : "es")")
-                            .font(.system(size: 10))
-                            .foregroundColor(Color(hex: "666666"))
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(height: 20)
-                }
-            }
-            .background(Color(hex: "252525"))
-            
-            Divider()
-                .background(Color(hex: "333333"))
-            
             // File list
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -183,6 +122,41 @@ struct FileBrowserView: View {
                         Divider()
                             .background(Color(hex: "333333"))
                             .padding(.vertical, 8)
+                    }
+                    
+                    // Current directory/cache header
+                    VStack(spacing: 0) {
+                        HStack(spacing: 8) {
+                            if !isShowingCache {
+                                Button(action: navigateUp) {
+                                    Image(systemName: "chevron.up")
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundColor(Color(hex: "888888"))
+                                .disabled(audioEngine.currentDirectory.path == "/")
+                            }
+                            
+                            Text(isShowingCache ? "Cache" : audioEngine.currentDirectory.lastPathComponent)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            
+                            Spacer()
+                            
+                            if isShowingCache {
+                                Text("\(cachedItems.count) item\(cachedItems.count == 1 ? "" : "s")")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Color(hex: "666666"))
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(hex: "252525"))
+                        
+                        Divider()
+                            .background(Color(hex: "333333"))
                     }
                     
                     // Content: either cache items or directory contents
@@ -356,17 +330,6 @@ struct FileBrowserView: View {
         loadCachedFiles()
     }
     
-    var pathComponents: [URL] {
-        var components: [URL] = []
-        var current = audioEngine.currentDirectory
-        while current.path != "/" {
-            components.insert(current, at: 0)
-            current = current.deletingLastPathComponent()
-        }
-        components.insert(URL(fileURLWithPath: "/"), at: 0)
-        return components
-    }
-    
     func loadDirectory() {
         let fm = FileManager.default
         let url = audioEngine.currentDirectory
@@ -410,12 +373,6 @@ struct FileBrowserView: View {
             let parent = audioEngine.currentDirectory.deletingLastPathComponent()
             audioEngine.currentDirectory = parent
         }
-    }
-    
-    func navigateTo(_ url: URL) {
-        audioEngine.currentDirectory = url
-        selectedFile = nil
-        selectedCacheKey = nil
     }
     
     func selectFile(_ item: FileItem) {
