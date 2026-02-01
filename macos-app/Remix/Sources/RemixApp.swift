@@ -33,6 +33,12 @@ struct RemixApp: App {
                 .keyboardShortcut("b", modifiers: .command)
                 .disabled(!audioEngine.hasSession)
                 
+                Button("Open EQ...") {
+                    audioEngine.showEQWindow = true
+                }
+                .keyboardShortcut("e", modifiers: .command)
+                .disabled(!audioEngine.hasSession)
+                
                 Divider()
                 Button("Re-analyze") {
                     audioEngine.reanalyze()
@@ -69,8 +75,10 @@ struct RemixApp: App {
                 
                 Divider()
                 
-                Toggle("Cycle", isOn: $audioEngine.isLooping)
-                    .keyboardShortcut("l", modifiers: .command)
+                Button(audioEngine.isLooping ? "Disable Loop" : "Enable Loop") {
+                    audioEngine.toggleLooping()
+                }
+                .keyboardShortcut("l", modifiers: .command)
             }
             
             CommandGroup(replacing: .help) {
@@ -131,6 +139,7 @@ struct HelpView: View {
                         VStack(spacing: 4) {
                             shortcutRow("Open File", "⌘O")
                             shortcutRow("Bounce Mix", "⌘B")
+                            shortcutRow("Open EQ", "⌘E")
                             shortcutRow("Re-analyze", "⇧⌘R")
                             shortcutRow("Play / Pause", "Space")
                             shortcutRow("Stop", "Return")

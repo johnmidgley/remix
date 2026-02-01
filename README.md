@@ -21,6 +21,13 @@ Audio stem separation tool with a native macOS mixer interface. Uses AI-powered 
   - Shows progress bar with time remaining
 - **Intelligent Caching**: Fast reload of previously analyzed files
 - **Real-time Mixing**: Adjust volume levels for each stem with faders
+- **8-Band Parametric EQ**: Professional-grade EQ with per-stem or global control
+  - Separate, movable window for independent operation
+  - Stereo EQ interface with vertical faders and real-time level meters
+  - Visual feedback: meters show frequency content for each band
+  - 10 bands from 32 Hz to 16 kHz
+  - Adjustable gain (-12 to +12 dB) and Q (bandwidth) per band
+  - Apply to individual stems or master output
 - **Playback Controls**: Variable speed (0.5x-2x) and pitch shift (±2 semitones)
   - Settings remembered per song
 - **Solo/Mute**: Isolate or mute individual stems
@@ -61,14 +68,22 @@ open "Remix.app"
    - Cached files load instantly without re-processing
 4. **Mix**: Use faders to adjust each stem's volume and pan position
 5. **Solo/Mute**: Click S to solo a stem, M to mute it
-6. **Playback**: Use speed (0.5x-2x) and pitch (±2 semitones) controls
-7. **Transport**: Space to play/pause, transport controls in toolbar
-8. **Bounce**: Export your mix via File > Bounce or the toolbar button
+6. **EQ**: Click EQ button in toolbar (or press Cmd+E) to open parametric equalizer
+   - Opens in separate, movable window that can be positioned anywhere
+   - Select individual stems or Master from dropdown
+   - Stereo EQ interface with 10 vertical faders (32 Hz - 16 kHz)
+   - Real-time level meters beside each fader show frequency content
+   - Adjust gain (-12 to +12 dB) and Q (bandwidth) per band
+   - EQ settings saved per song and per stem
+7. **Playback**: Use speed (0.5x-2x) and pitch (±2 semitones) controls
+8. **Transport**: Space to play/pause, transport controls in toolbar
+9. **Bounce**: Export your mix via File > Bounce or the toolbar button
 
 ### Keyboard Shortcuts
 
 - `Cmd+O` - Open file
 - `Cmd+B` - Bounce mix
+- `Cmd+E` - Open EQ window
 - `Cmd+R` - Reset all faders
 - `Space` - Play/Pause
 - `Return` - Stop
@@ -157,8 +172,9 @@ pip install torch==2.5.0
   - App learns your machine's speed and provides accurate estimates
   - First analysis may be slower while downloading the model
 - **Smart caching**: Previously analyzed files load instantly from cache
-- **Per-song settings**: Speed, pitch, and loop settings are saved individually for each song
-  - Return to any song and your preferred playback settings are restored
+- **Per-song settings**: Speed, pitch, loop, and EQ settings are saved individually for each song
+  - Return to any song and your preferred playback and EQ settings are restored
+  - Each stem can have unique EQ curves that are remembered
 - **Supported formats**: WAV and MP3 input; output is always WAV
 - **First run**: Downloads Demucs model (~1GB)
 - **Progress tracking**: Real-time progress bar with time-remaining estimates

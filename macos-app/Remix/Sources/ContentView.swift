@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
     @EnvironmentObject var audioEngine: AudioEngine
@@ -34,6 +35,13 @@ struct ContentView: View {
             ErrorSheet(errorMessage: audioEngine.errorMessage ?? "", onDismiss: {
                 audioEngine.errorMessage = nil
             })
+        }
+        .onChange(of: audioEngine.showEQWindow) { show in
+            if show {
+                EQWindowManager.shared.showWindow(audioEngine: audioEngine)
+            } else {
+                EQWindowManager.shared.hideWindow()
+            }
         }
     }
 }
@@ -643,8 +651,17 @@ struct ToolbarView: View {
                     .buttonStyle(ToolbarButtonStyle())
                     .disabled(!audioEngine.hasSession)
                     .opacity(audioEngine.hasSession ? 1.0 : 0.0)
+                    
+                    // EQ button (only available after analysis)
+                    Button(action: { audioEngine.showEQWindow = true }) {
+                        Label("EQ", systemImage: "slider.horizontal.3")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(ToolbarButtonStyle())
+                    .disabled(!audioEngine.hasSession)
+                    .opacity(audioEngine.hasSession ? 1.0 : 0.0)
                 }
-                .frame(width: 280, alignment: .trailing)
+                .frame(width: 370, alignment: .trailing)
             }
             .padding(.trailing, 16)
         }
@@ -683,7 +700,7 @@ struct TransportView: View {
                 TransportButton(
                     icon: "repeat",
                     isActive: audioEngine.isLooping,
-                    action: { audioEngine.isLooping.toggle() }
+                    action: { audioEngine.toggleLooping() }
                 )
             }
             .padding(4)
@@ -1293,19 +1310,22 @@ struct MixerView: View {
             TimelineView()
             
             // Channel strips - centered with spacing
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    // All channels except the last one (Other)
-                    ForEach(0..<max(0, audioEngine.componentCount - 1), id: \.self) { index in
-                        ChannelStripView(index: index)
+            GeometryReader { geometry in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        // All channels except the last one (Other)
+                        ForEach(0..<max(0, audioEngine.componentCount - 1), id: \.self) { index in
+                            ChannelStripView(index: index)
+                        }
+                        
+                        // The last channel (Other)
+                        if audioEngine.componentCount > 0 {
+                            ChannelStripView(index: audioEngine.componentCount - 1)
+                        }
                     }
-                    
-                    // The last channel (Other)
-                    if audioEngine.componentCount > 0 {
-                        ChannelStripView(index: audioEngine.componentCount - 1)
-                    }
+                    .padding(.horizontal, 20)
+                    .frame(minWidth: geometry.size.width, alignment: .center)
                 }
-                .padding(.horizontal, 20)
             }
             .frame(maxWidth: .infinity)
             .background(Color(hex: "1e1e1e"))
@@ -2026,6 +2046,329 @@ struct ErrorSheet: View {
         .padding(20)
         .frame(width: 500, height: 400)
         .background(Color(hex: "2d2d2d"))
+    }
+}
+
+// MARK: - EQ Window Manager
+class EQWindowManager: ObservableObject {
+    static let shared = EQWindowManager()
+    private var window: NSWindow?
+    private var windowDelegate: WindowCloseDelegate?  // Strong reference to delegate
+    
+    func showWindow(audioEngine: AudioEngine) {
+        if window == nil {
+            let contentView = EQWindow()
+                .environmentObject(audioEngine)
+            
+            let hostingController = NSHostingController(rootView: contentView)
+            
+            window = NSWindow(contentViewController: hostingController)
+            window?.title = "Parametric EQ"
+            window?.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window?.setContentSize(NSSize(width: 1000, height: 500))
+            window?.level = .floating
+            window?.isReleasedWhenClosed = false
+            window?.minSize = NSSize(width: 900, height: 450)
+            
+            // Center window
+            if let screen = NSScreen.main {
+                let screenRect = screen.visibleFrame
+                let windowRect = window!.frame
+                let x = screenRect.midX - windowRect.width / 2
+                let y = screenRect.midY - windowRect.height / 2
+                window?.setFrameOrigin(NSPoint(x: x, y: y))
+            }
+            
+            // Keep strong reference to delegate
+            windowDelegate = WindowCloseDelegate(audioEngine: audioEngine)
+            window?.delegate = windowDelegate
+        }
+        
+        window?.makeKeyAndOrderFront(nil)
+        audioEngine.showEQWindow = true
+    }
+    
+    func hideWindow() {
+        window?.orderOut(nil)
+    }
+}
+
+class WindowCloseDelegate: NSObject, NSWindowDelegate {
+    let audioEngine: AudioEngine
+    
+    init(audioEngine: AudioEngine) {
+        self.audioEngine = audioEngine
+    }
+    
+    func windowWillClose(_ notification: Notification) {
+        audioEngine.showEQWindow = false
+    }
+}
+
+// MARK: - EQ Window
+struct EQWindow: View {
+    @EnvironmentObject var audioEngine: AudioEngine
+    @State private var selectedTarget: String = "Master"
+    
+    var targetOptions: [String] {
+        ["Master"] + audioEngine.stemNames
+    }
+    
+    var currentBands: [AudioEngine.EQBand] {
+        audioEngine.eqSettings[selectedTarget]?.bands ?? AudioEngine.EQBandSettings().bands
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Spacer()
+                
+                // Target selector
+                Picker("", selection: $selectedTarget) {
+                    ForEach(targetOptions, id: \.self) { target in
+                        Text(target).tag(target)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 120)
+                
+                Button("Reset") {
+                    audioEngine.resetEQ(target: selectedTarget)
+                }
+                .buttonStyle(SecondaryToolbarButtonStyle())
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color(hex: "2d2d2d"))
+            
+            Divider()
+                .background(Color(hex: "444444"))
+            
+            // EQ Bands - Horizontal layout with vertical controls
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 16) {
+                    ForEach(0..<currentBands.count, id: \.self) { index in
+                        VerticalEQBandView(
+                            bandIndex: index,
+                            band: currentBands[index],
+                            target: selectedTarget,
+                            level: index < audioEngine.eqBandLevels.count ? audioEngine.eqBandLevels[index] : 0
+                        )
+                    }
+                }
+                .padding(16)
+            }
+            .id("\(selectedTarget)-\(audioEngine.eqResetCounter)")  // Force refresh when target changes or reset is pressed
+            .background(Color(hex: "1a1a1a"))
+        }
+        .background(Color(hex: "1a1a1a"))
+        .ignoresSafeArea()
+    }
+}
+
+struct VerticalEQBandView: View {
+    @EnvironmentObject var audioEngine: AudioEngine
+    let bandIndex: Int
+    let band: AudioEngine.EQBand
+    let target: String
+    let level: Float
+    
+    @State private var gain: Float
+    @State private var q: Float
+    
+    init(bandIndex: Int, band: AudioEngine.EQBand, target: String, level: Float) {
+        self.bandIndex = bandIndex
+        self.band = band
+        self.target = target
+        self.level = level
+        _gain = State(initialValue: band.gain)
+        _q = State(initialValue: band.q)
+    }
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            // Frequency label at top
+            Text(formatFrequency(band.frequency))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.white)
+            
+            // Gain value
+            Text("\(gain, specifier: "%.1f") dB")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(gain > 0.1 ? Color(hex: "30d158") : (gain < -0.1 ? Color(hex: "ff9500") : Color(hex: "888888")))
+                .frame(width: 60)
+            
+            HStack(spacing: 8) {
+                // dB scale labels
+                VStack {
+                    Text("+12")
+                        .font(.system(size: 8))
+                        .foregroundColor(Color(hex: "666666"))
+                    Spacer()
+                    Text("0")
+                        .font(.system(size: 8))
+                        .foregroundColor(Color(hex: "888888"))
+                    Spacer()
+                    Text("-12")
+                        .font(.system(size: 8))
+                        .foregroundColor(Color(hex: "666666"))
+                }
+                .frame(height: 200)
+                
+                // Vertical level meter
+                VerticalEQMeterView(level: level)
+                
+                // Vertical gain fader
+                VerticalGainFader(value: $gain, onChange: { newValue in
+                    audioEngine.updateEQBand(target: target, bandIndex: bandIndex, gain: newValue, q: q)
+                })
+            }
+            
+            // Q control
+            VStack(spacing: 4) {
+                Text("Q: \(q, specifier: "%.1f")")
+                    .font(.system(size: 9))
+                    .foregroundColor(Color(hex: "888888"))
+                
+                Slider(value: $q, in: 0.1...10, step: 0.1)
+                    .onChange(of: q) { newValue in
+                        audioEngine.updateEQBand(target: target, bandIndex: bandIndex, gain: gain, q: newValue)
+                    }
+                    .frame(width: 70)
+            }
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 10)
+        .frame(width: 120)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(hex: "252525"))
+        )
+    }
+    
+    func formatFrequency(_ freq: Float) -> String {
+        if freq >= 1000 {
+            return String(format: "%.1fk", freq / 1000)
+        } else {
+            return String(format: "%.0f", freq)
+        }
+    }
+}
+
+// MARK: - Vertical EQ Meter
+struct VerticalEQMeterView: View {
+    let level: Float
+    
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .bottom) {
+                // Background
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color(hex: "111111"))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 2)
+                            .stroke(Color(hex: "333333"), lineWidth: 1)
+                    )
+                
+                // Level fill
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(hex: "30d158"),
+                                Color(hex: "30d158"),
+                                Color(hex: "ffcc00"),
+                                Color(hex: "ff9500"),
+                                Color(hex: "ff3b30")
+                            ],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        )
+                    )
+                    .frame(height: geometry.size.height * CGFloat(level))
+                    .animation(.easeOut(duration: 0.05), value: level)
+            }
+        }
+        .frame(width: 8, height: 200)
+    }
+}
+
+// MARK: - Vertical Gain Fader for EQ
+struct VerticalGainFader: View {
+    @Binding var value: Float  // -12 to +12 dB
+    let onChange: (Float) -> Void
+    
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                // Track background
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color(hex: "0a0a0a"))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color(hex: "333333"), lineWidth: 1)
+                    )
+                
+                // Center line (0 dB)
+                Rectangle()
+                    .fill(Color(hex: "444444"))
+                    .frame(width: 20, height: 2)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                
+                // +12 and -12 labels
+                VStack {
+                    Text("+12")
+                        .font(.system(size: 8))
+                        .foregroundColor(Color(hex: "666666"))
+                    Spacer()
+                    Text("0")
+                        .font(.system(size: 8))
+                        .foregroundColor(Color(hex: "888888"))
+                    Spacer()
+                    Text("-12")
+                        .font(.system(size: 8))
+                        .foregroundColor(Color(hex: "666666"))
+                }
+                .padding(.vertical, 4)
+                
+                // Thumb
+                VStack {
+                    // Convert gain (-12 to +12) to position (0 to 1)
+                    let normalizedValue = (value + 12) / 24  // -12 becomes 0, +12 becomes 1
+                    let thumbY = (1 - CGFloat(normalizedValue)) * (geometry.size.height - 16) + 8
+                    
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(hex: "6a6a6a"), Color(hex: "4a4a4a"), Color(hex: "3a3a3a")],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(width: 24, height: 16)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 3)
+                                .stroke(Color(hex: "222222"), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                        .position(x: geometry.size.width / 2, y: thumbY)
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        // Convert Y position to gain value
+                        let y = gesture.location.y
+                        let normalizedY = max(0, min(1, y / geometry.size.height))
+                        let newGain = 12 - (normalizedY * 24)  // Top = +12, Bottom = -12
+                        let clampedGain = Float(max(-12, min(12, newGain)))
+                        value = clampedGain
+                        onChange(clampedGain)
+                    }
+            )
+        }
+        .frame(width: 26, height: 200)
     }
 }
 

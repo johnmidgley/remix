@@ -266,14 +266,14 @@ class AudioEngine: ObservableObject {
     @Published var hasCachedAnalysis: Bool = false // Whether cache exists for current file
     @Published var cacheModifiedCounter: Int = 0  // Increments when cache is cleared, to trigger UI refresh
     @Published var componentCount: Int = 0
+    @Published var showEQWindow: Bool = false
+    @Published var eqSettings: [String: EQBandSettings] = [:]  // Key: stem name or "master"
+    @Published var eqResetCounter: Int = 0  // Increments to force UI refresh
+    @Published var eqBandLevels: [Float] = Array(repeating: 0, count: 8)  // Real-time levels for 8 EQ bands
     @Published var sampleRate: UInt32 = 44100
     @Published var isProcessing: Bool = false
     @Published var isPlaying: Bool = false
-    @Published var isLooping: Bool = false {
-        didSet {
-            saveCurrentSongSettings()
-        }
-    }
+    @Published var isLooping: Bool = false
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
     @Published var errorMessage: String?
@@ -294,16 +294,8 @@ class AudioEngine: ObservableObject {
             UserDefaults.standard.set(showFileBrowser, forKey: "showFileBrowser")
         }
     }
-    @Published var playbackRate: Float = 1.0 {
-        didSet {
-            saveCurrentSongSettings()
-        }
-    }
-    @Published var pitch: Float = 0.0 {  // Pitch shift in cents (-200 to +200)
-        didSet {
-            saveCurrentSongSettings()
-        }
-    }
+    @Published var playbackRate: Float = 1.0
+    @Published var pitch: Float = 0.0  // Pitch shift in cents (-200 to +200)
     @Published var waveformSamples: [Float] = []
     @Published var selectionStart: Double = 0
     @Published var selectionEnd: Double = 0
@@ -324,8 +316,12 @@ class AudioEngine: ObservableObject {
     private var playerNodes: [AVAudioPlayerNode] = []
     private var mixerNode: AVAudioMixerNode?
     private var timePitchNode: AVAudioUnitTimePitch?
+    private var eqNodes: [AVAudioUnitEQ] = []  // EQ for each stem
+    private var masterEQNode: AVAudioUnitEQ?   // Master EQ
+    private var eqMeterNode: AVAudioMixerNode? // Meter node for EQ analysis
     private var audioBuffers: [AVAudioPCMBuffer] = []
     private var meterTapNodes: [AVAudioMixerNode] = []  // For metering
+    private var eqBandPeakLevels: [Float] = Array(repeating: 0, count: 8)
     private var startTime: Double = 0
     private var pauseTime: Double = 0
     private var timer: Timer?
@@ -369,6 +365,31 @@ class AudioEngine: ObservableObject {
         var playbackRate: Float = 1.0
         var pitch: Float = 0.0
         var isLooping: Bool = false
+        var eqSettings: [String: EQBandSettings] = [:]  // Key: stem name or "master"
+    }
+    
+    struct EQBandSettings: Codable {
+        var bands: [EQBand] = []
+        
+        init() {
+            // Initialize 8 bands with default frequencies
+            let frequencies: [Float] = [60, 150, 400, 1000, 2500, 6000, 12000, 16000]
+            bands = frequencies.map { freq in
+                EQBand(frequency: freq, gain: 0, q: 1.0, bypass: false)
+            }
+        }
+    }
+    
+    struct EQBand: Codable, Identifiable {
+        let id = UUID()
+        var frequency: Float
+        var gain: Float  // -12 to +12 dB
+        var q: Float     // 0.1 to 10
+        var bypass: Bool
+        
+        enum CodingKeys: String, CodingKey {
+            case frequency, gain, q, bypass
+        }
     }
     
     private var currentSongKey: String? {
@@ -411,7 +432,8 @@ class AudioEngine: ObservableObject {
         let settings = SongSettings(
             playbackRate: playbackRate,
             pitch: pitch,
-            isLooping: isLooping
+            isLooping: isLooping,
+            eqSettings: eqSettings
         )
         
         if let encoded = try? JSONEncoder().encode(settings) {
@@ -425,6 +447,7 @@ class AudioEngine: ObservableObject {
             playbackRate = 1.0
             pitch = 0.0
             isLooping = false
+            eqSettings = [:]
             timePitchNode?.rate = 1.0
             timePitchNode?.pitch = 0.0
             return
@@ -436,13 +459,16 @@ class AudioEngine: ObservableObject {
             playbackRate = settings.playbackRate
             pitch = settings.pitch
             isLooping = settings.isLooping
+            eqSettings = settings.eqSettings
             timePitchNode?.rate = settings.playbackRate
             timePitchNode?.pitch = settings.pitch
+            applyEQSettings()
         } else {
             // Use defaults for new song
             playbackRate = 1.0
             pitch = 0.0
             isLooping = false
+            eqSettings = [:]
             timePitchNode?.rate = 1.0
             timePitchNode?.pitch = 0.0
         }
@@ -463,16 +489,135 @@ class AudioEngine: ObservableObject {
         audioEngine = AVAudioEngine()
         mixerNode = AVAudioMixerNode()
         timePitchNode = AVAudioUnitTimePitch()
+        masterEQNode = AVAudioUnitEQ(numberOfBands: 8)
+        eqMeterNode = AVAudioMixerNode()
         
-        guard let engine = audioEngine, let mixer = mixerNode, let timePitch = timePitchNode else { return }
+        guard let engine = audioEngine, let mixer = mixerNode, let timePitch = timePitchNode, let masterEQ = masterEQNode, let eqMeter = eqMeterNode else { return }
         
         engine.attach(mixer)
         engine.attach(timePitch)
+        engine.attach(masterEQ)
+        engine.attach(eqMeter)
         
-        // Connect mixer -> timePitch -> mainMixer (output)
+        // Initialize master EQ bands
+        configureMasterEQ()
+        
+        // Connect mixer -> masterEQ -> eqMeter -> timePitch -> mainMixer (output)
         let format = engine.mainMixerNode.outputFormat(forBus: 0)
-        engine.connect(mixer, to: timePitch, format: format)
+        engine.connect(mixer, to: masterEQ, format: format)
+        engine.connect(masterEQ, to: eqMeter, format: format)
+        engine.connect(eqMeter, to: timePitch, format: format)
         engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+        
+        // Install tap for EQ band metering
+        setupEQMeterTap()
+    }
+    
+    private func setupEQMeterTap() {
+        guard let eqMeter = eqMeterNode, let engine = audioEngine else { return }
+        
+        // Remove existing tap if any
+        eqMeter.removeTap(onBus: 0)
+        
+        // Ensure engine is running
+        if !engine.isRunning {
+            do {
+                try engine.start()
+            } catch {
+                print("Failed to start engine for EQ tap: \(error)")
+                return
+            }
+        }
+        
+        let tapFormat = eqMeter.outputFormat(forBus: 0)
+        if tapFormat.sampleRate > 0 {
+            eqMeter.installTap(onBus: 0, bufferSize: 4096, format: tapFormat) { [weak self] buffer, _ in
+                guard let self = self, self.isPlaying else { return }
+                self.analyzeEQBands(buffer: buffer)
+            }
+        }
+    }
+    
+    private func analyzeEQBands(buffer: AVAudioPCMBuffer) {
+        guard let channelData = buffer.floatChannelData else { return }
+        let frameLength = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        
+        guard frameLength > 0 else { return }
+        
+        // Simple band energy estimation using RMS with frequency weighting
+        // For more accurate results, we'd use FFT, but this provides a good approximation
+        var bandLevels: [Float] = Array(repeating: 0, count: 8)
+        
+        for channel in 0..<channelCount {
+            let data = channelData[channel]
+            
+            // Calculate RMS for the entire signal
+            var totalEnergy: Float = 0
+            for frame in 0..<frameLength {
+                let sample = data[frame]
+                totalEnergy += sample * sample
+            }
+            let rms = sqrt(totalEnergy / Float(frameLength))
+            
+            // Distribute energy across bands with weighting
+            // This is a simplified approach - ideally we'd use FFT
+            for bandIndex in 0..<8 {
+                // Apply a weighting factor based on typical frequency content
+                let weight: Float
+                if bandIndex < 2 {
+                    weight = 0.9 // Low frequencies (60, 150 Hz)
+                } else if bandIndex < 4 {
+                    weight = 1.3 // Low-mid frequencies (400, 1k Hz) - typically louder
+                } else if bandIndex < 6 {
+                    weight = 1.1 // Mid-high frequencies (2.5k, 6k Hz)
+                } else {
+                    weight = 0.7 // High frequencies (12k, 16k Hz)
+                }
+                
+                bandLevels[bandIndex] += rms * weight
+            }
+        }
+        
+        // Average across channels and normalize
+        for i in 0..<bandLevels.count {
+            bandLevels[i] = bandLevels[i] / Float(channelCount)
+            bandLevels[i] = min(1.0, bandLevels[i] * 3.0) // Scale and clamp
+            
+            // Apply peak hold with decay
+            eqBandPeakLevels[i] = max(bandLevels[i], eqBandPeakLevels[i] * meterDecay)
+        }
+        
+        // Update published values on main thread
+        DispatchQueue.main.async {
+            self.eqBandLevels = self.eqBandPeakLevels
+        }
+    }
+    
+    private func configureMasterEQ() {
+        guard let masterEQ = masterEQNode else { return }
+        
+        let frequencies: [Float] = [60, 150, 400, 1000, 2500, 6000, 12000, 16000]
+        for (index, freq) in frequencies.enumerated() where index < masterEQ.bands.count {
+            let band = masterEQ.bands[index]
+            band.frequency = freq
+            band.gain = 0
+            band.bandwidth = 1.0
+            band.filterType = .parametric
+            band.bypass = false
+        }
+    }
+    
+    private func configureEQNode(_ eqNode: AVAudioUnitEQ) {
+        let frequencies: [Float] = [60, 150, 400, 1000, 2500, 6000, 12000, 16000]
+        for (index, freq) in frequencies.enumerated() where index < eqNode.bands.count {
+            let band = eqNode.bands[index]
+            band.frequency = freq
+            band.gain = 0
+            band.bandwidth = 1.0
+            band.filterType = .parametric
+            band.bypass = false
+        }
     }
     
     // MARK: - File Operations
@@ -600,6 +745,7 @@ class AudioEngine: ObservableObject {
                 self.selectionEnd = 0
                 
                 self.setupPlayerNodes()
+                self.setupEQMeterTap()  // Reinstall tap after engine is started
                 self.computeWaveformSamples()
                 
                 self.hasLoadedFile = false
@@ -676,6 +822,7 @@ class AudioEngine: ObservableObject {
                 self.selectionEnd = 0
                 
                 self.setupPlayerNodes()
+                self.setupEQMeterTap()  // Reinstall tap after engine is started
                 self.computeWaveformSamples()
                 
                 self.hasLoadedFile = false
@@ -1085,6 +1232,7 @@ class AudioEngine: ObservableObject {
             self.selectionEnd = 0
             
             self.setupPlayerNodes()
+            self.setupEQMeterTap()  // Reinstall tap after engine is started
             self.computeWaveformSamples()
             
             self.hasLoadedFile = false  // No longer in pre-analysis state
@@ -1199,19 +1347,29 @@ class AudioEngine: ObservableObject {
             node.removeTap(onBus: 0)
             engine.detach(node)
         }
+        for node in eqNodes {
+            engine.detach(node)
+        }
         playerNodes.removeAll()
         meterTapNodes.removeAll()
+        eqNodes.removeAll()
         peakLevels = Array(repeating: 0, count: audioBuffers.count)
         
         for (index, buffer) in audioBuffers.enumerated() {
             let player = AVAudioPlayerNode()
+            let eq = AVAudioUnitEQ(numberOfBands: 8)
             let meterMixer = AVAudioMixerNode()
             
             engine.attach(player)
+            engine.attach(eq)
             engine.attach(meterMixer)
             
-            // Player -> MeterMixer -> MainMixer
-            engine.connect(player, to: meterMixer, format: buffer.format)
+            // Configure EQ bands
+            configureEQNode(eq)
+            
+            // Player -> EQ -> MeterMixer -> MainMixer
+            engine.connect(player, to: eq, format: buffer.format)
+            engine.connect(eq, to: meterMixer, format: buffer.format)
             engine.connect(meterMixer, to: mixer, format: buffer.format)
             
             // Install tap for metering
@@ -1227,8 +1385,12 @@ class AudioEngine: ObservableObject {
             }
             
             playerNodes.append(player)
+            eqNodes.append(eq)
             meterTapNodes.append(meterMixer)
         }
+        
+        // Load EQ settings if available
+        applyEQSettings()
         
         do {
             try engine.start()
@@ -1512,14 +1674,128 @@ class AudioEngine: ObservableObject {
         updateAllPans()
     }
     
+    // MARK: - EQ Control
+    func updateEQBand(target: String, bandIndex: Int, gain: Float, q: Float) {
+        // Initialize EQ settings for this target if not exists
+        if eqSettings[target] == nil {
+            eqSettings[target] = EQBandSettings()
+        }
+        
+        // Update stored settings
+        if bandIndex < eqSettings[target]!.bands.count {
+            eqSettings[target]!.bands[bandIndex].gain = gain
+            eqSettings[target]!.bands[bandIndex].q = q
+        }
+        
+        // Apply to audio nodes immediately
+        applyEQToNode(target: target, bandIndex: bandIndex, gain: gain, q: q)
+        
+        // Save to UserDefaults
+        saveCurrentSongSettings()
+    }
+    
+    private func applyEQToNode(target: String, bandIndex: Int, gain: Float, q: Float) {
+        if target == "Master" {
+            if let masterEQ = masterEQNode, bandIndex < masterEQ.bands.count {
+                let band = masterEQ.bands[bandIndex]
+                band.gain = gain
+                band.bandwidth = q
+                band.bypass = false
+            }
+        } else if let stemIndex = stemNames.firstIndex(of: target), stemIndex < eqNodes.count {
+            let eq = eqNodes[stemIndex]
+            if bandIndex < eq.bands.count {
+                let band = eq.bands[bandIndex]
+                band.gain = gain
+                band.bandwidth = q
+                band.bypass = false
+            }
+        }
+    }
+    
+    private func applyEQSettings() {
+        // Initialize default EQ settings if they don't exist
+        if eqSettings["Master"] == nil {
+            eqSettings["Master"] = EQBandSettings()
+        }
+        
+        for stemName in stemNames {
+            if eqSettings[stemName] == nil {
+                eqSettings[stemName] = EQBandSettings()
+            }
+        }
+        
+        // Apply master EQ
+        if let masterSettings = eqSettings["Master"], let masterEQ = masterEQNode {
+            for (index, bandSettings) in masterSettings.bands.enumerated() where index < masterEQ.bands.count {
+                let band = masterEQ.bands[index]
+                band.gain = bandSettings.gain
+                band.bandwidth = bandSettings.q
+                band.bypass = bandSettings.bypass
+            }
+        }
+        
+        // Apply stem EQs
+        for (stemIndex, stemName) in stemNames.enumerated() {
+            if let stemSettings = eqSettings[stemName], stemIndex < eqNodes.count {
+                let eq = eqNodes[stemIndex]
+                for (bandIndex, bandSettings) in stemSettings.bands.enumerated() where bandIndex < eq.bands.count {
+                    let band = eq.bands[bandIndex]
+                    band.gain = bandSettings.gain
+                    band.bandwidth = bandSettings.q
+                    band.bypass = bandSettings.bypass
+                }
+            }
+        }
+    }
+    
+    func resetEQ(target: String) {
+        // Create fresh default settings
+        let defaultSettings = EQBandSettings()
+        eqSettings[target] = defaultSettings
+        
+        // Apply directly to audio nodes to ensure immediate effect
+        if target == "Master" {
+            if let masterEQ = masterEQNode {
+                for (index, _) in defaultSettings.bands.enumerated() where index < masterEQ.bands.count {
+                    let band = masterEQ.bands[index]
+                    band.gain = 0
+                    band.bandwidth = 1.0
+                    band.bypass = false
+                }
+            }
+        } else if let stemIndex = stemNames.firstIndex(of: target), stemIndex < eqNodes.count {
+            let eq = eqNodes[stemIndex]
+            for (index, _) in defaultSettings.bands.enumerated() where index < eq.bands.count {
+                let band = eq.bands[index]
+                band.gain = 0
+                band.bandwidth = 1.0
+                band.bypass = false
+            }
+        }
+        
+        // Increment counter to force UI refresh
+        eqResetCounter += 1
+        
+        // Save to UserDefaults
+        saveCurrentSongSettings()
+    }
+    
     func setPlaybackRate(_ rate: Float) {
         playbackRate = rate
         timePitchNode?.rate = rate
+        saveCurrentSongSettings()
     }
     
     func setPitch(_ cents: Float) {
         pitch = max(-200, min(200, cents))
         timePitchNode?.pitch = pitch
+        saveCurrentSongSettings()
+    }
+    
+    func toggleLooping() {
+        isLooping.toggle()
+        saveCurrentSongSettings()
     }
 
     func setSelection(start: Double, end: Double) {
@@ -1828,6 +2104,16 @@ class AudioEngine: ObservableObject {
                 engine.detach(node)
             }
             
+            // Clean up EQ nodes
+            for node in eqNodes {
+                engine.detach(node)
+            }
+            
+            // Clean up EQ meter node
+            if let eqMeter = eqMeterNode {
+                eqMeter.removeTap(onBus: 0)
+            }
+            
             // Clean up original audio player
             if let player = originalPlayerNode {
                 engine.detach(player)
@@ -1839,6 +2125,7 @@ class AudioEngine: ObservableObject {
         }
         
         playerNodes.removeAll()
+        eqNodes.removeAll()
         meterTapNodes.removeAll()
         peakLevels.removeAll()
         audioBuffers.removeAll()
@@ -1873,6 +2160,8 @@ class AudioEngine: ObservableObject {
         processingProgress = 0
         estimatedTimeRemaining = 0
         estimatedTotalTime = 0
+        eqBandLevels = Array(repeating: 0, count: 10)
+        eqBandPeakLevels = Array(repeating: 0, count: 8)
         
         // Clear current input URL (this will prevent saving settings after cleanup)
         currentInputURL = nil
