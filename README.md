@@ -8,9 +8,15 @@ Audio stem separation tool with a native macOS mixer interface. Uses AI-powered 
   - Drums, Bass, Guitar, Keys (piano), Voice, Other
 - **Multiple Formats**: Supports WAV and MP3 input files
 - **Native macOS App**: Logic Pro-style interface with SwiftUI
+- **Smart Progress Estimation**: Learns from each analysis to provide accurate time estimates
+  - Starts with 1:1 ratio (1 minute processing per 1 minute audio)
+  - Adapts based on your machine's performance
+  - Shows progress bar with time remaining
+- **Intelligent Caching**: Fast reload of previously analyzed files
 - **Real-time Mixing**: Adjust volume levels for each stem with faders
+- **Playback Controls**: Variable speed (0.5x-2x) and pitch shift (±2 semitones)
 - **Solo/Mute**: Isolate or mute individual stems
-- **Playback**: Listen to your mix in real-time
+- **Pan Control**: Position each stem in the stereo field
 - **Export**: Bounce your custom mix to a WAV file
 
 ## Native macOS App
@@ -39,11 +45,17 @@ open "Remix.app"
 ### Using the App
 
 1. **Drop/Open**: Drag audio file onto the window or use File > Open
-2. **Wait**: Demucs takes 2-5 minutes depending on file length
-3. **Mix**: Use faders to adjust each stem's volume
-4. **Solo/Mute**: Click S to solo a stem, M to mute it
-5. **Transport**: Space to play/pause, transport controls in toolbar
-6. **Bounce**: Export your mix via File > Bounce or the toolbar button
+2. **Preview**: Listen to the original audio before analyzing
+3. **Analyze**: Click the Analyze button to separate stems
+   - First run: Shows estimated time based on audio length (1:1 ratio)
+   - Subsequent runs: Uses learned rate from your machine's performance
+   - Progress bar shows time remaining during processing
+   - Cached files load instantly without re-processing
+4. **Mix**: Use faders to adjust each stem's volume and pan position
+5. **Solo/Mute**: Click S to solo a stem, M to mute it
+6. **Playback**: Use speed (0.5x-2x) and pitch (±2 semitones) controls
+7. **Transport**: Space to play/pause, transport controls in toolbar
+8. **Bounce**: Export your mix via File > Bounce or the toolbar button
 
 ### Keyboard Shortcuts
 
@@ -53,6 +65,11 @@ open "Remix.app"
 - `Space` - Play/Pause
 - `Return` - Stop
 - `Cmd+L` - Toggle loop
+
+### Playback Controls
+
+- **Speed**: Adjust playback speed from 0.5x to 2x (accessible in toolbar)
+- **Pitch**: Shift pitch ±2 semitones without affecting tempo (accessible in toolbar)
 
 ## Stem Separation
 
@@ -68,6 +85,18 @@ Uses Meta's Demucs v4 (htdemucs_6s) deep learning model:
 | **Other** | Everything else (strings, horns, etc.) |
 
 Quality: ~9 dB SDR (state-of-the-art)
+
+## Smart Progress Estimation
+
+Remix learns from each analysis to provide accurate time estimates:
+
+1. **Initial Estimate**: First run assumes 1:1 ratio (1 minute processing per 1 minute audio)
+2. **Adaptive Learning**: After each analysis, adjusts estimate based on actual time taken
+3. **Machine-Specific**: Learns your specific machine's performance characteristics
+4. **Persistent Memory**: Remembers learned rate between app launches
+5. **Cache Awareness**: Only updates estimates from actual processing, not cache loads
+
+Example: If your machine processes a 3-minute song in 6 minutes, future estimates will be closer to 2:1 ratio.
 
 ## How Demucs Works
 
@@ -116,7 +145,10 @@ pip install torch==2.5.0
 
 ## Notes
 
-- Processing time: ~2-5 minutes for a typical 3-4 minute song
-- Supports WAV and MP3 input; output is always WAV
-- Caches analysis results for faster subsequent loads
-- First run downloads Demucs model (~1GB)
+- **Processing time**: Varies by machine (typically 1-5 minutes per minute of audio)
+  - App learns your machine's speed and provides accurate estimates
+  - First analysis may be slower while downloading the model
+- **Smart caching**: Previously analyzed files load instantly from cache
+- **Supported formats**: WAV and MP3 input; output is always WAV
+- **First run**: Downloads Demucs model (~1GB)
+- **Progress tracking**: Real-time progress bar with time-remaining estimates

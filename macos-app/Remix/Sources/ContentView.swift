@@ -971,18 +971,16 @@ struct DropZoneView: View {
             VStack(spacing: 20) {
                 if audioEngine.isProcessing {
                     VStack(spacing: 16) {
-                        // Elapsed time display
-                        if let startTime = audioEngine.analysisStartTime {
-                            AnalysisTimerView(startTime: startTime)
-                        } else {
-                            ProgressView()
-                                .scaleEffect(1.5)
-                                .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "0a84ff")))
+                        // Progress bar
+                        VStack(spacing: 12) {
+                            ProgressView(value: audioEngine.processingProgress, total: 1.0)
+                                .progressViewStyle(LinearProgressViewStyle(tint: Color(hex: "0a84ff")))
+                                .frame(width: 300)
+                            
+                            Text(audioEngine.processingStatus.isEmpty ? "Processing..." : audioEngine.processingStatus)
+                                .font(.system(size: 14))
+                                .foregroundColor(Color(hex: "888888"))
                         }
-                        
-                        Text(audioEngine.processingStatus.isEmpty ? "Processing..." : audioEngine.processingStatus)
-                            .font(.system(size: 14))
-                            .foregroundColor(Color(hex: "888888"))
                         
                         Text("Demucs may take several minutes on first run")
                             .font(.system(size: 11))
@@ -1073,20 +1071,18 @@ struct PreAnalysisView: View {
             // Analysis options and button
             VStack(spacing: 24) {
                 if audioEngine.isProcessing {
-                    // Processing indicator with elapsed time
+                    // Processing indicator with progress bar
                     VStack(spacing: 16) {
-                        // Elapsed time display
-                        if let startTime = audioEngine.analysisStartTime {
-                            AnalysisTimerView(startTime: startTime)
-                        } else {
-                            ProgressView()
-                                .scaleEffect(1.5)
-                                .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "0a84ff")))
+                        // Progress bar
+                        VStack(spacing: 12) {
+                            ProgressView(value: audioEngine.processingProgress, total: 1.0)
+                                .progressViewStyle(LinearProgressViewStyle(tint: Color(hex: "0a84ff")))
+                                .frame(width: 300)
+                            
+                            Text(audioEngine.processingStatus.isEmpty ? "Processing..." : audioEngine.processingStatus)
+                                .font(.system(size: 14))
+                                .foregroundColor(Color(hex: "888888"))
                         }
-                        
-                        Text(audioEngine.processingStatus.isEmpty ? "Processing..." : audioEngine.processingStatus)
-                            .font(.system(size: 14))
-                            .foregroundColor(Color(hex: "888888"))
                         
                         Text("Demucs may take several minutes on first run")
                             .font(.system(size: 11))

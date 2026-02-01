@@ -277,6 +277,8 @@ class AudioEngine: ObservableObject {
     @Published var processingStatus: String = ""
     @Published var processingProgress: Double = 0
     @Published var analysisStartTime: Date?
+    @Published var estimatedTimeRemaining: TimeInterval = 0
+    @Published var estimatedTotalTime: TimeInterval = 0
     @Published var currentDirectory: URL = FileManager.default.homeDirectoryForCurrentUser {
         didSet {
             // Persist the last used directory
@@ -339,6 +341,13 @@ class AudioEngine: ObservableObject {
     private var demucsModel: OpaquePointer?
     private var modelLoadError: String?
     
+    // Processing time estimation
+    private var processingRate: Double {
+        get { UserDefaults.standard.double(forKey: "processingRate") }
+        set { UserDefaults.standard.set(newValue, forKey: "processingRate") }
+    }
+    private var progressTimer: Timer?
+    
     // MARK: - Initialization
     init() {
         // Restore last used directory if available
@@ -349,11 +358,17 @@ class AudioEngine: ObservableObject {
             }
         }
         
+        // Initialize processing rate if not set (default: 1 minute processing per 1 minute audio)
+        if processingRate == 0 {
+            processingRate = 1.0
+        }
+        
         setupAudioEngine()
     }
     
     deinit {
         cleanup()
+        stopProgressTimer()
         // Free Demucs model
         if let model = demucsModel {
             demucs_free_model(model)
@@ -443,6 +458,7 @@ class AudioEngine: ObservableObject {
             self.isProcessing = true
             self.processingStatus = "Loading from cache..."
             self.processingProgress = 0.5
+            self.estimatedTimeRemaining = 0
         }
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -501,6 +517,7 @@ class AudioEngine: ObservableObject {
                 self.isProcessing = false
                 self.processingStatus = ""
                 self.processingProgress = 1
+                self.estimatedTimeRemaining = 0
             }
         }
     }
@@ -516,6 +533,7 @@ class AudioEngine: ObservableObject {
             self.isProcessing = true
             self.processingStatus = "Loading from cache..."
             self.processingProgress = 0.5
+            self.estimatedTimeRemaining = 0
         }
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -575,6 +593,7 @@ class AudioEngine: ObservableObject {
                 self.isProcessing = false
                 self.processingStatus = ""
                 self.processingProgress = 1
+                self.estimatedTimeRemaining = 0
             }
         }
     }
@@ -729,6 +748,14 @@ class AudioEngine: ObservableObject {
             self.processingStatus = "Starting..."
             self.processingProgress = 0
             self.analysisStartTime = Date()
+            
+            // Calculate estimated total time based on audio duration and processing rate
+            let audioDurationMinutes = self.duration / 60.0
+            self.estimatedTotalTime = audioDurationMinutes * self.processingRate * 60.0 // Convert back to seconds
+            self.estimatedTimeRemaining = self.estimatedTotalTime
+            
+            // Start progress timer
+            self.startProgressTimer()
         }
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -771,9 +798,6 @@ class AudioEngine: ObservableObject {
     }
     
     private func processWithDemucs(url: URL) {
-        updateStatus("Initializing Demucs...")
-        updateProgress(0)
-        
         // Initialize demucs if not already done
         if !loadDemucsModel() {
             handleError(modelLoadError ?? "Failed to initialize Demucs")
@@ -793,8 +817,6 @@ class AudioEngine: ObservableObject {
         }
         
         // Convert input to WAV if needed using our Rust library
-        updateStatus("Preparing audio...")
-        updateProgress(0.05)
         
         let inputPath: String
         let fileExtension = url.pathExtension.lowercased()
@@ -840,9 +862,6 @@ class AudioEngine: ObservableObject {
             }
         }
         
-        updateStatus("Running Demucs separation (this may take a few minutes)...")
-        updateProgress(0.1)
-        
         // Run Demucs separation via Rust FFI
         let result = demucs_separate(demucsModel, inputPath, tempDir.path)
         
@@ -853,9 +872,6 @@ class AudioEngine: ObservableObject {
             handleError("Demucs separation failed: \(errorMsg)")
             return
         }
-        
-        updateProgress(0.9)
-        updateStatus("Loading stems...")
         
         // Collect stem paths
         var loadedStems: [(name: String, displayName: String, url: URL)] = []
@@ -897,8 +913,6 @@ class AudioEngine: ObservableObject {
             let idx2 = Self.demucsStems.firstIndex(of: stem2.name) ?? Int.max
             return idx1 < idx2
         }
-        
-        updateProgress(1.0)
         
         // Load audio buffers
         loadStemFiles(stems: loadedStems)
@@ -948,6 +962,20 @@ class AudioEngine: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
+            // Update processing rate based on actual time taken
+            if let startTime = self.analysisStartTime {
+                let actualTime = Date().timeIntervalSince(startTime)
+                let audioDurationMinutes = detectedDuration / 60.0
+                if audioDurationMinutes > 0 {
+                    let newRate = (actualTime / 60.0) / audioDurationMinutes
+                    // Smooth the rate with exponential moving average (80% old, 20% new)
+                    self.processingRate = self.processingRate * 0.8 + newRate * 0.2
+                }
+            }
+            
+            // Stop progress timer
+            self.stopProgressTimer()
+            
             // Clean up original audio player (no longer needed after analysis)
             self.cleanupOriginalPlayer()
             
@@ -976,6 +1004,7 @@ class AudioEngine: ObservableObject {
             self.isProcessing = false
             self.processingStatus = ""
             self.processingProgress = 1
+            self.estimatedTimeRemaining = 0
             self.analysisStartTime = nil
         }
     }
@@ -999,12 +1028,6 @@ class AudioEngine: ObservableObject {
     }
     
     // MARK: - Helper Methods
-    private func updateStatus(_ status: String) {
-        DispatchQueue.main.async {
-            self.processingStatus = status
-        }
-    }
-    
     private func computeWaveformSamples() {
         guard let firstBuffer = audioBuffers.first else {
             DispatchQueue.main.async { self.waveformSamples = [] }
@@ -1062,18 +1085,13 @@ class AudioEngine: ObservableObject {
         return (clampedStart, length)
     }
     
-    private func updateProgress(_ progress: Double) {
-        let clamped = max(0, min(1, progress))
-        DispatchQueue.main.async {
-            self.processingProgress = clamped
-        }
-    }
-    
     private func handleError(_ message: String) {
         DispatchQueue.main.async {
+            self.stopProgressTimer()
             self.isProcessing = false
             self.processingStatus = ""
             self.processingProgress = 0
+            self.estimatedTimeRemaining = 0
             self.analysisStartTime = nil
             self.errorMessage = message
         }
@@ -1516,6 +1534,46 @@ class AudioEngine: ObservableObject {
         }
     }
     
+    // MARK: - Progress Timer
+    private func startProgressTimer() {
+        stopProgressTimer()
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.updateProgressEstimate()
+        }
+    }
+    
+    private func stopProgressTimer() {
+        progressTimer?.invalidate()
+        progressTimer = nil
+    }
+    
+    private func updateProgressEstimate() {
+        guard let startTime = analysisStartTime else { return }
+        
+        let elapsed = Date().timeIntervalSince(startTime)
+        
+        if estimatedTotalTime > 0 {
+            // Calculate progress (cap at 0.95 until actually complete)
+            let progress = min(0.95, elapsed / estimatedTotalTime)
+            processingProgress = progress
+            
+            // Calculate time remaining
+            let remaining = max(0, estimatedTotalTime - elapsed)
+            estimatedTimeRemaining = remaining
+            
+            // Update status with time estimate
+            if remaining > 60 {
+                let mins = Int(remaining / 60)
+                processingStatus = "Processing... ~\(mins)m remaining"
+            } else if remaining > 0 {
+                let secs = Int(remaining)
+                processingStatus = "Processing... ~\(secs)s remaining"
+            } else {
+                processingStatus = "Processing... almost done"
+            }
+        }
+    }
+    
     private func updateTime() {
         guard isPlaying else { return }
         
@@ -1663,6 +1721,7 @@ class AudioEngine: ObservableObject {
     // MARK: - Cleanup
     private func cleanup() {
         stop()
+        stopProgressTimer()
         
         if let engine = audioEngine {
             engine.stop()
@@ -1720,5 +1779,8 @@ class AudioEngine: ObservableObject {
         waveformSamples.removeAll()
         selectionStart = 0
         selectionEnd = 0
+        processingProgress = 0
+        estimatedTimeRemaining = 0
+        estimatedTotalTime = 0
     }
 }
