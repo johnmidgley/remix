@@ -116,13 +116,6 @@ struct FileBrowserView: View {
                         .truncationMode(.middle)
                     
                     Spacer()
-                    
-                    Button(action: { audioEngine.showFileBrowser = false }) {
-                        Image(systemName: "sidebar.left")
-                            .font(.system(size: 11))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(Color(hex: "888888"))
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
