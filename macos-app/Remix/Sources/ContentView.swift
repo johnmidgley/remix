@@ -594,16 +594,23 @@ struct ToolbarView: View {
     
     var body: some View {
         HStack(spacing: 0) {
-            // Left section - Sidebar toggle
-            HStack(spacing: 12) {
-                Button(action: { audioEngine.showFileBrowser.toggle() }) {
-                    Image(systemName: "sidebar.left")
-                        .font(.system(size: 12))
-                        .foregroundColor(audioEngine.showFileBrowser ? Color(hex: "0a84ff") : Color(hex: "888888"))
+            // Left section - Sidebar toggle (aligned with transport)
+            VStack(spacing: 12) {
+                // Spacer to match song title height
+                Spacer()
+                    .frame(height: 16)
+                
+                // Sidebar toggle aligned with transport/VU meters
+                HStack(spacing: 12) {
+                    Button(action: { audioEngine.showFileBrowser.toggle() }) {
+                        Image(systemName: "sidebar.left")
+                            .font(.system(size: 12))
+                            .foregroundColor(audioEngine.showFileBrowser ? Color(hex: "0a84ff") : Color(hex: "888888"))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+                .frame(width: 220, alignment: .leading)
             }
-            .frame(width: 220, alignment: .leading)
             .padding(.leading, 12)
             
             Spacer()
@@ -625,63 +632,70 @@ struct ToolbarView: View {
             
             Spacer()
             
-            // Right section - Actions (fixed width)
-            HStack(spacing: 12) {
-                // Playback speed (always reserve space)
-                HStack(spacing: 4) {
-                    Image(systemName: "speedometer")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color(hex: "888888"))
-                    
-                    Picker("", selection: Binding(
-                        get: { audioEngine.playbackRate },
-                        set: { audioEngine.setPlaybackRate($0) }
-                    )) {
-                        Text("0.5x").tag(Float(0.5))
-                        Text("0.75x").tag(Float(0.75))
-                        Text("1x").tag(Float(1.0))
-                        Text("1.25x").tag(Float(1.25))
-                        Text("1.5x").tag(Float(1.5))
-                        Text("2x").tag(Float(2.0))
-                    }
-                    .pickerStyle(.menu)
-                    .frame(width: 70)
-                    .disabled(!(audioEngine.hasLoadedFile || audioEngine.hasSession))
-                }
-                .opacity((audioEngine.hasLoadedFile || audioEngine.hasSession) ? 1.0 : 0.0)
+            // Right section - Actions (fixed width, aligned with transport)
+            VStack(spacing: 12) {
+                // Spacer to match song title height
+                Spacer()
+                    .frame(height: 16)
                 
-                // Pitch control (always reserve space)
-                HStack(spacing: 4) {
-                    Image(systemName: "tuningfork")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color(hex: "888888"))
-                    
-                    Picker("", selection: Binding(
-                        get: { audioEngine.pitch },
-                        set: { audioEngine.setPitch($0) }
-                    )) {
-                        Text("-2").tag(Float(-200))
-                        Text("-1").tag(Float(-100))
-                        Text("0").tag(Float(0))
-                        Text("+1").tag(Float(100))
-                        Text("+2").tag(Float(200))
+                // Controls aligned with transport/VU meters
+                HStack(spacing: 12) {
+                    // Playback speed (always reserve space)
+                    HStack(spacing: 4) {
+                        Image(systemName: "speedometer")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "888888"))
+                        
+                        Picker("", selection: Binding(
+                            get: { audioEngine.playbackRate },
+                            set: { audioEngine.setPlaybackRate($0) }
+                        )) {
+                            Text("0.5x").tag(Float(0.5))
+                            Text("0.75x").tag(Float(0.75))
+                            Text("1x").tag(Float(1.0))
+                            Text("1.25x").tag(Float(1.25))
+                            Text("1.5x").tag(Float(1.5))
+                            Text("2x").tag(Float(2.0))
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 70)
+                        .disabled(!(audioEngine.hasLoadedFile || audioEngine.hasSession))
                     }
-                    .pickerStyle(.menu)
-                    .frame(width: 60)
-                    .disabled(!(audioEngine.hasLoadedFile || audioEngine.hasSession))
+                    .opacity((audioEngine.hasLoadedFile || audioEngine.hasSession) ? 1.0 : 0.0)
+                    
+                    // Pitch control (always reserve space)
+                    HStack(spacing: 4) {
+                        Image(systemName: "tuningfork")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "888888"))
+                        
+                        Picker("", selection: Binding(
+                            get: { audioEngine.pitch },
+                            set: { audioEngine.setPitch($0) }
+                        )) {
+                            Text("-2").tag(Float(-200))
+                            Text("-1").tag(Float(-100))
+                            Text("0").tag(Float(0))
+                            Text("+1").tag(Float(100))
+                            Text("+2").tag(Float(200))
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 60)
+                        .disabled(!(audioEngine.hasLoadedFile || audioEngine.hasSession))
+                    }
+                    .opacity((audioEngine.hasLoadedFile || audioEngine.hasSession) ? 1.0 : 0.0)
+                    
+                    // Bounce (always reserve space)
+                    Button(action: { audioEngine.bounceToFile() }) {
+                        Label("Bounce", systemImage: "square.and.arrow.down")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(ToolbarButtonStyle())
+                    .disabled(!audioEngine.hasSession)
+                    .opacity(audioEngine.hasSession ? 1.0 : 0.0)
                 }
-                .opacity((audioEngine.hasLoadedFile || audioEngine.hasSession) ? 1.0 : 0.0)
-                
-                // Bounce (always reserve space)
-                Button(action: { audioEngine.bounceToFile() }) {
-                    Label("Bounce", systemImage: "square.and.arrow.down")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .buttonStyle(ToolbarButtonStyle())
-                .disabled(!audioEngine.hasSession)
-                .opacity(audioEngine.hasSession ? 1.0 : 0.0)
+                .frame(width: 280, alignment: .trailing)
             }
-            .frame(width: 280, alignment: .trailing)
             .padding(.trailing, 16)
         }
         .frame(height: 76)
