@@ -22,6 +22,10 @@ class CacheManager {
         let sampleRate: UInt32
         let duration: Double
         let createdAt: Date
+        let bpm: Double?  // Average BPM (nil for old cache)
+        let clickAlignmentOffset: Double?  // DEPRECATED: Time offset in seconds (nil for old cache)
+        let beatTimes: [Double]?  // DEPRECATED: Replaced by tempoMap
+        let tempoMap: [[Double]]?  // Tempo map: [[time, bpm], [time, bpm], ...] (nil for old cache)
     }
     
     private init() {
@@ -155,7 +159,11 @@ class CacheManager {
             stemNames: savedNames,
             sampleRate: sampleRate,
             duration: duration,
-            createdAt: Date()
+            createdAt: Date(),
+            bpm: nil,
+            clickAlignmentOffset: nil,
+            beatTimes: nil,
+            tempoMap: nil
         )
         
         do {
@@ -299,7 +307,6 @@ class AudioEngine: ObservableObject {
     @Published var waveformSamples: [Float] = []
     @Published var selectionStart: Double = 0
     @Published var selectionEnd: Double = 0
-    
     // Stem data
     @Published var stemNames: [String] = []
     @Published var faderValues: [Double] = []
@@ -336,6 +343,8 @@ class AudioEngine: ObservableObject {
     private var originalAudioBuffer: AVAudioPCMBuffer?
     private var originalPlayerNode: AVAudioPlayerNode?
     private var originalMeterNode: AVAudioMixerNode?
+    
+    // Click track is now managed as a regular audio buffer in audioBuffers[]
     
     // Demucs stem order
     static let demucsStems = ["drums", "bass", "guitar", "piano", "vocals", "other"]
@@ -838,10 +847,17 @@ class AudioEngine: ObservableObject {
     
     /// Re-analyze the file, ignoring cache
     func reanalyze() {
-        guard let url = currentInputURL else { return }
+        NSLog("🎵 === RE-ANALYZE CALLED ===")
+        guard let url = currentInputURL else {
+            NSLog("🎵 ERROR: No current input URL")
+            return
+        }
+        
+        NSLog("🎵 Re-analyzing file: %@", url.lastPathComponent)
         
         // Clear cache for this file
         CacheManager.shared.clearCache(for: url)
+        NSLog("🎵 Cache cleared for file")
         
         // Reset state to allow re-analysis, then run analyze
         // We need hasLoadedFile = true for analyze() to work
@@ -852,6 +868,7 @@ class AudioEngine: ObservableObject {
             self.hasLoadedFile = true
             self.cacheModifiedCounter += 1  // Signal UI to refresh cache list
             
+            NSLog("🎵 Starting fresh analysis...")
             // Run fresh analysis after state is set
             self.analyze()
         }
@@ -1628,6 +1645,7 @@ class AudioEngine: ObservableObject {
     func setFaderValue(_ value: Double, for index: Int) {
         guard index < faderValues.count else { return }
         faderValues[index] = value
+        
         updateGain(for: index)
     }
     
@@ -1997,6 +2015,10 @@ class AudioEngine: ObservableObject {
         currentTime = position
         play()
     }
+    
+    // MARK: - Click Track (Metronome)
+    
+    /// Generate click track buffer based on BPM and duration
     
     // MARK: - Bounce/Export
     func bounceToFile() {

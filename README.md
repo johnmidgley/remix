@@ -9,6 +9,35 @@ Audio stem separation tool with a native macOS mixer interface. Uses AI-powered 
   <img src="Remix UI.png" alt="Remix UI" width="800">
 </div>
 
+## Quickstart
+
+Get started with Remix in 3 steps:
+
+### 1. Build the App
+```bash
+./build-macos-app.sh
+```
+The script will automatically check for Python dependencies and offer to install them if needed.
+
+### 2. Run Remix
+```bash
+open Remix.app
+```
+
+### 3. Analyze Your First Track
+1. **Drag & drop** an audio file (WAV or MP3) onto the window
+2. Click **"Analyze"** to separate the track into stems
+   - First run downloads the AI model (~1GB) and may take a few minutes
+   - Subsequent runs are much faster, and cached files load instantly
+3. **Mix** using the faders - adjust volume, pan, solo/mute individual instruments
+4. Press **Space** to play/pause, **Cmd+E** for EQ, **Cmd+B** to export
+
+That's it! You're now remixing. 🎵
+
+**Tip:** The app remembers all your settings (speed, pitch, EQ, etc.) for each song, so you can return anytime and pick up where you left off.
+
+---
+
 ## Features
 
 - **AI Instrument Separation**: Splits audio into 6 stems using Demucs:
@@ -40,10 +69,15 @@ Audio stem separation tool with a native macOS mixer interface. Uses AI-powered 
 
 - **Rust** (for building)
 - **Xcode Command Line Tools** (for Swift compilation)
-- **Python 3** with demucs package:
-  ```bash
-  pip install demucs
-  ```
+- **Python 3.8+** (the build script will check for and offer to install required packages)
+
+**Note:** The build script will automatically detect and offer to install the required Python package:
+- `demucs` - AI-powered stem separation
+
+Or install manually:
+```bash
+pip install demucs
+```
 
 ### Building
 

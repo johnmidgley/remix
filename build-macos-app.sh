@@ -7,10 +7,17 @@ set -e
 # Requirements:
 #   - Rust (for building)
 #   - Xcode Command Line Tools (for Swift compilation)
-#   - Python 3 with demucs package (pip install demucs)
+#   - Python 3 with demucs, librosa, and soundfile packages
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
 echo "=========================================="
 echo "Building Remix for macOS"
@@ -20,6 +27,107 @@ echo "=========================================="
 # Detect architecture
 ARCH=$(uname -m)
 echo "Architecture: $ARCH"
+
+# Check Python dependencies
+echo ""
+echo "Checking Python dependencies..."
+echo "=========================================="
+
+# Find Python 3
+PYTHON_CMD=""
+for cmd in python3 python /usr/bin/python3 /usr/local/bin/python3; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+        if "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)" 2>/dev/null; then
+            PYTHON_CMD="$cmd"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo -e "${RED}✗ Python 3.8+ not found${NC}"
+    echo "  Please install Python 3: https://www.python.org/downloads/"
+    exit 1
+fi
+
+PYTHON_VERSION=$("$PYTHON_CMD" --version 2>&1 | cut -d' ' -f2)
+echo -e "${GREEN}✓ Python $PYTHON_VERSION found${NC} ($PYTHON_CMD)"
+
+# Find pip
+PIP_CMD=""
+for cmd in pip3 pip "$PYTHON_CMD -m pip"; do
+    if eval "$cmd --version" >/dev/null 2>&1; then
+        PIP_CMD="$cmd"
+        break
+    fi
+done
+
+if [ -z "$PIP_CMD" ]; then
+    echo -e "${RED}✗ pip not found${NC}"
+    echo "  Please install pip: https://pip.pypa.io/en/stable/installation/"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ pip found${NC}"
+
+# Check required packages
+REQUIRED_PACKAGES=("demucs")
+MISSING_PACKAGES=()
+
+for package in "${REQUIRED_PACKAGES[@]}"; do
+    if "$PYTHON_CMD" -c "import $package" 2>/dev/null; then
+        PACKAGE_VERSION=$("$PYTHON_CMD" -c "import $package; print(getattr($package, '__version__', 'unknown'))" 2>/dev/null)
+        echo -e "${GREEN}✓ $package${NC} ($PACKAGE_VERSION)"
+    else
+        echo -e "${YELLOW}✗ $package not installed${NC}"
+        MISSING_PACKAGES+=("$package")
+    fi
+done
+
+# Install missing packages if any
+if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
+    echo ""
+    echo -e "${YELLOW}Missing required Python packages:${NC} ${MISSING_PACKAGES[*]}"
+    echo ""
+    read -p "Would you like to install them now? (y/n) " -n 1 -r
+    echo ""
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${BLUE}Installing Python packages...${NC}"
+        $PIP_CMD install "${MISSING_PACKAGES[@]}"
+        
+        # Verify installation
+        echo ""
+        echo "Verifying installation..."
+        ALL_INSTALLED=true
+        for package in "${MISSING_PACKAGES[@]}"; do
+            if "$PYTHON_CMD" -c "import $package" 2>/dev/null; then
+                echo -e "${GREEN}✓ $package installed successfully${NC}"
+            else
+                echo -e "${RED}✗ Failed to install $package${NC}"
+                ALL_INSTALLED=false
+            fi
+        done
+        
+        if [ "$ALL_INSTALLED" = false ]; then
+            echo ""
+            echo -e "${RED}Some packages failed to install. Please install manually:${NC}"
+            echo "  $PIP_CMD install ${MISSING_PACKAGES[*]}"
+            exit 1
+        fi
+    else
+        echo ""
+        echo -e "${RED}Build cancelled.${NC} Please install required packages first:"
+        echo "  $PIP_CMD install ${MISSING_PACKAGES[*]}"
+        echo ""
+        echo "Then run this script again."
+        exit 1
+    fi
+fi
+
+echo ""
+echo -e "${GREEN}All Python dependencies satisfied!${NC}"
+echo "=========================================="
 
 # Build Rust library and binaries
 echo ""
