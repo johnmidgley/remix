@@ -3,6 +3,13 @@ import AppKit
 
 struct ContentView: View {
     @EnvironmentObject var audioEngine: AudioEngine
+    @FocusState private var focusedField: FocusField?
+    
+    enum FocusField: Hashable {
+        case timeline
+        case mixer
+        case transport
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -42,6 +49,74 @@ struct ContentView: View {
             } else {
                 EQWindowManager.shared.hideWindow()
             }
+        }
+        .background(KeyEventHandlingView(audioEngine: audioEngine))
+    }
+}
+
+// MARK: - Key Event Handling (backward compatible)
+struct KeyEventHandlingView: NSViewRepresentable {
+    let audioEngine: AudioEngine
+    
+    func makeNSView(context: Context) -> KeyEventNSView {
+        let view = KeyEventNSView(audioEngine: audioEngine)
+        DispatchQueue.main.async {
+            view.window?.makeFirstResponder(view)
+        }
+        return view
+    }
+    
+    func updateNSView(_ nsView: KeyEventNSView, context: Context) {
+        // No update needed
+    }
+}
+
+class KeyEventNSView: NSView {
+    let audioEngine: AudioEngine
+    
+    init(audioEngine: AudioEngine) {
+        self.audioEngine = audioEngine
+        super.init(frame: .zero)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override var acceptsFirstResponder: Bool { true }
+    
+    override func keyDown(with event: NSEvent) {
+        guard let characters = event.charactersIgnoringModifiers else {
+            super.keyDown(with: event)
+            return
+        }
+        
+        switch event.keyCode {
+        case 123: // Left arrow
+            if audioEngine.hasSession || audioEngine.hasLoadedFile {
+                let newTime = max(0, audioEngine.currentTime - 5.0)
+                audioEngine.seek(to: newTime)
+            } else {
+                super.keyDown(with: event)
+            }
+            
+        case 124: // Right arrow
+            if audioEngine.hasSession || audioEngine.hasLoadedFile {
+                let newTime = min(audioEngine.duration, audioEngine.currentTime + 5.0)
+                audioEngine.seek(to: newTime)
+            } else {
+                super.keyDown(with: event)
+            }
+            
+        case 53: // Escape
+            if audioEngine.selectionEnd > audioEngine.selectionStart {
+                audioEngine.clearSelection()
+            } else {
+                super.keyDown(with: event)
+            }
+            
+        default:
+            super.keyDown(with: event)
         }
     }
 }
@@ -494,6 +569,26 @@ struct FileRowView: View {
         item.isDirectory || item.isAudioFile
     }
     
+    private var accessibilityLabelText: String {
+        if item.isDirectory {
+            return "Folder: \(item.name)"
+        } else if item.isAudioFile {
+            return "Audio file: \(item.name)"
+        } else {
+            return "File: \(item.name)"
+        }
+    }
+    
+    private var accessibilityHintText: String {
+        if item.isDirectory {
+            return "Double-tap to open this folder"
+        } else if item.isAudioFile {
+            return "Double-tap to load this audio file"
+        } else {
+            return "Not a supported file type"
+        }
+    }
+    
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: iconName)
@@ -515,6 +610,29 @@ struct FileRowView: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { if isClickable { onDoubleClick() } }
         .onTapGesture(count: 1) { if isClickable { onSingleClick() } }
+        .accessibilityLabel(accessibilityLabelText)
+        .accessibilityHint(isClickable ? accessibilityHintText : "")
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .contextMenu {
+            if isClickable {
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                }
+                
+                if item.isAudioFile {
+                    Divider()
+                    Button("Load File") {
+                        onDoubleClick()
+                    }
+                }
+                
+                Divider()
+                
+                Button("Get Info") {
+                    NSWorkspace.shared.open(item.url)
+                }
+            }
+        }
     }
     
     var iconName: String {
@@ -566,6 +684,9 @@ struct ToolbarView: View {
                             .foregroundColor(audioEngine.showFileBrowser ? Color(hex: "0a84ff") : Color(hex: "888888"))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(audioEngine.showFileBrowser ? "Hide file browser" : "Show file browser")
+                    .accessibilityHint("Toggle the file browser sidebar")
+                    .help(audioEngine.showFileBrowser ? "Hide file browser sidebar" : "Show file browser sidebar")
                 }
                 .frame(width: 220, alignment: .leading)
             }
@@ -618,6 +739,9 @@ struct ToolbarView: View {
                         .pickerStyle(.menu)
                         .frame(width: 70)
                         .disabled(!(audioEngine.hasLoadedFile || audioEngine.hasSession))
+                        .accessibilityLabel("Playback speed")
+                        .accessibilityValue("\(audioEngine.playbackRate)x")
+                        .help("Adjust playback speed from 0.5x to 2x")
                     }
                     .opacity((audioEngine.hasLoadedFile || audioEngine.hasSession) ? 1.0 : 0.0)
                     
@@ -640,6 +764,9 @@ struct ToolbarView: View {
                         .pickerStyle(.menu)
                         .frame(width: 60)
                         .disabled(!(audioEngine.hasLoadedFile || audioEngine.hasSession))
+                        .accessibilityLabel("Pitch shift")
+                        .accessibilityValue("\(Int(audioEngine.pitch / 100)) semitones")
+                        .help("Shift pitch up or down by semitones")
                     }
                     .opacity((audioEngine.hasLoadedFile || audioEngine.hasSession) ? 1.0 : 0.0)
                     
@@ -651,6 +778,9 @@ struct ToolbarView: View {
                     .buttonStyle(ToolbarButtonStyle())
                     .disabled(!audioEngine.hasSession)
                     .opacity(audioEngine.hasSession ? 1.0 : 0.0)
+                    .accessibilityLabel("Bounce mix")
+                    .accessibilityHint("Export the mixed audio to a file")
+                    .help("Export your mix to an audio file (⌘B)")
                     
                     // EQ button (only available after analysis)
                     Button(action: { audioEngine.showEQWindow = true }) {
@@ -660,6 +790,9 @@ struct ToolbarView: View {
                     .buttonStyle(ToolbarButtonStyle())
                     .disabled(!audioEngine.hasSession)
                     .opacity(audioEngine.hasSession ? 1.0 : 0.0)
+                    .accessibilityLabel("Open equalizer")
+                    .accessibilityHint("Open the parametric EQ window")
+                    .help("Open the parametric EQ window (⌘E)")
                 }
                 .frame(width: 370, alignment: .trailing)
             }
@@ -690,18 +823,35 @@ struct TransportView: View {
         HStack(spacing: 16) {
             // Transport buttons
             HStack(spacing: 2) {
-                TransportButton(icon: "backward.end.fill", action: { audioEngine.seek(to: 0) })
-                TransportButton(icon: "stop.fill", action: { audioEngine.stop() })
+                TransportButton(
+                    icon: "backward.end.fill",
+                    action: { audioEngine.seek(to: 0) },
+                    label: "Go to beginning"
+                )
+                .help("Jump to the beginning of the track")
+                
+                TransportButton(
+                    icon: "stop.fill",
+                    action: { audioEngine.stop() },
+                    label: "Stop"
+                )
+                .help("Stop playback and reset to beginning")
+                
                 TransportButton(
                     icon: audioEngine.isPlaying ? "pause.fill" : "play.fill",
                     isActive: audioEngine.isPlaying,
-                    action: { audioEngine.togglePlayback() }
+                    action: { audioEngine.togglePlayback() },
+                    label: audioEngine.isPlaying ? "Pause" : "Play"
                 )
+                .help(audioEngine.isPlaying ? "Pause playback (Space)" : "Start playback (Space)")
+                
                 TransportButton(
                     icon: "repeat",
                     isActive: audioEngine.isLooping,
-                    action: { audioEngine.toggleLooping() }
+                    action: { audioEngine.toggleLooping() },
+                    label: audioEngine.isLooping ? "Disable loop" : "Enable loop"
                 )
+                .help(audioEngine.isLooping ? "Disable loop region (⌘L)" : "Enable loop region (⌘L)")
             }
             .padding(4)
             .background(
@@ -739,23 +889,38 @@ struct StereoVUMetersView: View {
     let leftLevel: Float
     let rightLevel: Float
     
+    private var accessibilityDescription: String {
+        let leftPercent = Int(leftLevel * 100)
+        let rightPercent = Int(rightLevel * 100)
+        return "Left channel: \(leftPercent)%. Right channel: \(rightPercent)%"
+    }
+    
     var body: some View {
         HStack(spacing: 4) {
-            VUMeterView(level: leftLevel)
-            VUMeterView(level: rightLevel)
+            VUMeterView(level: leftLevel, channel: "Left")
+            VUMeterView(level: rightLevel, channel: "Right")
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Master stereo meters")
+        .accessibilityValue(accessibilityDescription)
     }
 }
 
 // MARK: - Analog VU Meter (needle-style level meter)
 struct VUMeterView: View {
     let level: Float
+    var channel: String = "Channel"
     
     // Needle angle: -45° (min) to +45° (max)
     private var needleAngle: Double {
         let clampedLevel = Double(max(0, min(1, level)))
         // Map 0-1 to -45 to +45 degrees
         return -45 + (clampedLevel * 90)
+    }
+    
+    private var levelDescription: String {
+        let percent = Int(level * 100)
+        return "\(percent)%"
     }
     
     var body: some View {
@@ -790,6 +955,8 @@ struct VUMeterView: View {
                 )
         )
         .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+        .accessibilityLabel("\(channel) VU meter")
+        .accessibilityValue(levelDescription)
     }
 }
 
@@ -911,6 +1078,28 @@ struct TransportButton: View {
     let icon: String
     var isActive: Bool = false
     let action: () -> Void
+    var label: String = ""
+    
+    private var accessibilityLabelText: String {
+        if !label.isEmpty {
+            return label
+        }
+        // Fallback to icon-based label
+        switch icon {
+        case "backward.end.fill":
+            return "Go to beginning"
+        case "stop.fill":
+            return "Stop"
+        case "play.fill":
+            return "Play"
+        case "pause.fill":
+            return "Pause"
+        case "repeat":
+            return "Loop"
+        default:
+            return "Transport control"
+        }
+    }
     
     var body: some View {
         Button(action: action) {
@@ -924,12 +1113,22 @@ struct TransportButton: View {
             RoundedRectangle(cornerRadius: 4)
                 .fill(isActive ? Color(hex: "0a84ff").opacity(0.2) : Color.clear)
         )
+        .accessibilityLabel(accessibilityLabelText)
+        .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
     }
 }
 
 struct LCDDisplay: View {
     let time: Double
     let duration: Double
+    
+    private var accessibilityDescription: String {
+        let currentMins = Int(time) / 60
+        let currentSecs = Int(time) % 60
+        let totalMins = Int(duration) / 60
+        let totalSecs = Int(duration) % 60
+        return "Current time: \(currentMins) minutes \(currentSecs) seconds. Total duration: \(totalMins) minutes \(totalSecs) seconds"
+    }
     
     var body: some View {
         HStack(spacing: 4) {
@@ -954,6 +1153,8 @@ struct LCDDisplay: View {
                 )
         )
         .shadow(color: .black.opacity(0.5), radius: 2, y: 1)
+        .accessibilityLabel("Time display")
+        .accessibilityValue(accessibilityDescription)
     }
     
     func formatTime(_ seconds: Double) -> String {
@@ -1029,6 +1230,9 @@ struct DropZoneView: View {
                     .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
                         handleDrop(providers: providers)
                     }
+                    .accessibilityLabel("File drop zone")
+                    .accessibilityHint("Drop an audio file here or double-tap to browse")
+                    .accessibilityAddTraits(.isButton)
                 }
             }
             
@@ -1125,6 +1329,9 @@ struct PreAnalysisView: View {
                     }
                     .buttonStyle(.plain)
                     .shadow(color: Color(hex: "0a84ff").opacity(0.3), radius: 8, y: 2)
+                    .accessibilityLabel("Analyze audio")
+                    .accessibilityHint("Start separating the audio into individual instrument stems")
+                    .help("Analyze and separate audio into stems using Demucs AI")
                     
                     Text("Play to preview, then click Analyze to separate instruments")
                         .font(.system(size: 11))
@@ -1342,6 +1549,20 @@ struct TimelineView: View {
     @State private var regionDragOffset: Double = 0
     @State private var dragStartTime: Double = 0
     
+    private var accessibilityDescription: String {
+        let currentMins = Int(audioEngine.currentTime) / 60
+        let currentSecs = Int(audioEngine.currentTime) % 60
+        if audioEngine.selectionEnd > audioEngine.selectionStart {
+            let startMins = Int(audioEngine.selectionStart) / 60
+            let startSecs = Int(audioEngine.selectionStart) % 60
+            let endMins = Int(audioEngine.selectionEnd) / 60
+            let endSecs = Int(audioEngine.selectionEnd) % 60
+            return "Playhead at \(currentMins):\(String(format: "%02d", currentSecs)). Loop region from \(startMins):\(String(format: "%02d", startSecs)) to \(endMins):\(String(format: "%02d", endSecs))"
+        } else {
+            return "Playhead at \(currentMins):\(String(format: "%02d", currentSecs)). No loop region"
+        }
+    }
+    
     var body: some View {
         // Waveform + playhead + region
         GeometryReader { geometry in
@@ -1485,6 +1706,28 @@ struct TimelineView: View {
                 .foregroundColor(Color(hex: "333333")),
             alignment: .bottom
         )
+        .accessibilityLabel("Timeline and waveform")
+        .accessibilityValue(accessibilityDescription)
+        .accessibilityHint("Click to seek, drag to create a loop region, or drag an existing region to move it")
+        .help("Click to seek, drag to create a loop region, or drag an existing region to move it")
+        .contextMenu {
+            if audioEngine.selectionEnd > audioEngine.selectionStart {
+                Button("Clear Loop Region") {
+                    audioEngine.clearSelection()
+                }
+                Divider()
+            }
+            
+            Button("Go to Beginning") {
+                audioEngine.seek(to: 0)
+            }
+            
+            if audioEngine.duration > 0 {
+                Button("Go to End") {
+                    audioEngine.seek(to: audioEngine.duration)
+                }
+            }
+        }
     }
 }
 
@@ -1572,19 +1815,27 @@ struct ChannelStripView: View {
                 value: Binding(
                     get: { index < audioEngine.panValues.count ? audioEngine.panValues[index] : 0.0 },
                     set: { audioEngine.setPanValue($0, for: index) }
-                )
+                ),
+                stemName: stemName
             )
+            .help("Drag left or right to pan \(stemName). Double-click to center.")
             
             // Meter
-            MeterView(level: index < audioEngine.meterLevels.count ? audioEngine.meterLevels[index] : 0)
+            MeterView(
+                level: index < audioEngine.meterLevels.count ? audioEngine.meterLevels[index] : 0,
+                stemName: stemName
+            )
+            .help("\(stemName) audio level meter")
             
             // Fader
             FaderView(
                 value: Binding(
                     get: { index < audioEngine.faderValues.count ? audioEngine.faderValues[index] : 1.0 },
                     set: { audioEngine.setFaderValue($0, for: index) }
-                )
+                ),
+                stemName: stemName
             )
+            .help("Drag to adjust \(stemName) volume")
             
             // dB readout
             Text(formatDB(index < audioEngine.faderValues.count ? audioEngine.faderValues[index] : 1.0))
@@ -1607,14 +1858,19 @@ struct ChannelStripView: View {
                     label: "S",
                     isActive: index < audioEngine.soloStates.count ? audioEngine.soloStates[index] : false,
                     activeColor: Color(hex: "ffcc00"),
-                    action: { audioEngine.toggleSolo(for: index) }
+                    action: { audioEngine.toggleSolo(for: index) },
+                    stemName: stemName
                 )
+                .help("Solo \(stemName) - hear only this track")
+                
                 SoloMuteButton(
                     label: "M",
                     isActive: index < audioEngine.muteStates.count ? audioEngine.muteStates[index] : false,
                     activeColor: Color(hex: "ff453a"),
-                    action: { audioEngine.toggleMute(for: index) }
+                    action: { audioEngine.toggleMute(for: index) },
+                    stemName: stemName
                 )
+                .help("Mute \(stemName)")
             }
             .padding(.bottom, 10)
         }
@@ -1629,6 +1885,54 @@ struct ChannelStripView: View {
                     )
                 )
         )
+        .contextMenu {
+            Button("Reset Fader") {
+                audioEngine.setFaderValue(1.0, for: index)
+            }
+            
+            Button("Reset Pan") {
+                audioEngine.setPanValue(0.0, for: index)
+            }
+            
+            Divider()
+            
+            Button("Reset All") {
+                audioEngine.setFaderValue(1.0, for: index)
+                audioEngine.setPanValue(0.0, for: index)
+                if audioEngine.soloStates.indices.contains(index) && audioEngine.soloStates[index] {
+                    audioEngine.toggleSolo(for: index)
+                }
+                if audioEngine.muteStates.indices.contains(index) && audioEngine.muteStates[index] {
+                    audioEngine.toggleMute(for: index)
+                }
+            }
+            
+            Divider()
+            
+            if audioEngine.muteStates.indices.contains(index) {
+                if audioEngine.muteStates[index] {
+                    Button("Unmute") {
+                        audioEngine.toggleMute(for: index)
+                    }
+                } else {
+                    Button("Mute") {
+                        audioEngine.toggleMute(for: index)
+                    }
+                }
+            }
+            
+            if audioEngine.soloStates.indices.contains(index) {
+                if audioEngine.soloStates[index] {
+                    Button("Unsolo") {
+                        audioEngine.toggleSolo(for: index)
+                    }
+                } else {
+                    Button("Solo") {
+                        audioEngine.toggleSolo(for: index)
+                    }
+                }
+            }
+        }
     }
     
     func formatDB(_ value: Double) -> String {
@@ -1641,6 +1945,20 @@ struct ChannelStripView: View {
 // MARK: - Meter
 struct MeterView: View {
     let level: Float
+    var stemName: String = "Track"
+    
+    private var levelDescription: String {
+        let percent = Int(level * 100)
+        if level > 0.9 {
+            return "\(percent)% - High"
+        } else if level > 0.6 {
+            return "\(percent)% - Medium"
+        } else if level > 0.3 {
+            return "\(percent)% - Low"
+        } else {
+            return "\(percent)% - Very low"
+        }
+    }
     
     var body: some View {
         GeometryReader { geometry in
@@ -1673,6 +1991,8 @@ struct MeterView: View {
             }
         }
         .frame(width: 8, height: 100)
+        .accessibilityLabel("\(stemName) level meter")
+        .accessibilityValue(levelDescription)
     }
 }
 
@@ -1680,12 +2000,25 @@ struct MeterView: View {
 struct PanKnobView: View {
     @Binding var value: Double  // -1.0 (left) to 1.0 (right)
     @State private var isDragging = false
+    var stemName: String = "Track"
     
     private let knobSize: CGFloat = 32
     
     // Convert value (-1 to 1) to angle (-135 to 135 degrees)
     private var angle: Double {
         value * 135
+    }
+    
+    private var panDescription: String {
+        if abs(value) < 0.05 {
+            return "Center"
+        } else if value < 0 {
+            let percent = Int(abs(value) * 100)
+            return "\(percent)% Left"
+        } else {
+            let percent = Int(value * 100)
+            return "\(percent)% Right"
+        }
     }
     
     var body: some View {
@@ -1780,6 +2113,20 @@ struct PanKnobView: View {
                         }
                     }
             )
+            .accessibilityLabel("\(stemName) pan control")
+            .accessibilityValue(panDescription)
+            .accessibilityHint("Adjust the stereo position for this track. Double-tap with two fingers to center.")
+            .accessibilityAdjustableAction { direction in
+                let step = 0.1
+                switch direction {
+                case .increment:
+                    value = min(1.0, value + step)
+                case .decrement:
+                    value = max(-1.0, value - step)
+                @unknown default:
+                    break
+                }
+            }
         }
     }
 }
@@ -1787,6 +2134,13 @@ struct PanKnobView: View {
 // MARK: - Fader
 struct FaderView: View {
     @Binding var value: Double
+    var stemName: String = "Track"
+    
+    private var dbValue: String {
+        if value == 0 { return "-∞ dB" }
+        let db = 20 * log10(value)
+        return String(format: "%.1f dB", db)
+    }
     
     var body: some View {
         GeometryReader { geometry in
@@ -1837,6 +2191,20 @@ struct FaderView: View {
             )
         }
         .frame(width: 36, height: 120)
+        .accessibilityLabel("\(stemName) volume fader")
+        .accessibilityValue(dbValue)
+        .accessibilityHint("Adjust the volume level for this track")
+        .accessibilityAdjustableAction { direction in
+            let step = 0.05
+            switch direction {
+            case .increment:
+                value = min(1.0, value + step)
+            case .decrement:
+                value = max(0.0, value - step)
+            @unknown default:
+                break
+            }
+        }
     }
 }
 
@@ -1846,6 +2214,23 @@ struct SoloMuteButton: View {
     let isActive: Bool
     let activeColor: Color
     let action: () -> Void
+    var stemName: String = "Track"
+    
+    private var accessibilityLabelText: String {
+        if label == "S" {
+            return "Solo \(stemName)"
+        } else {
+            return "Mute \(stemName)"
+        }
+    }
+    
+    private var accessibilityHintText: String {
+        if label == "S" {
+            return isActive ? "Double-tap to unsolo this track" : "Double-tap to solo this track"
+        } else {
+            return isActive ? "Double-tap to unmute this track" : "Double-tap to mute this track"
+        }
+    }
     
     var body: some View {
         Button(action: action) {
@@ -1863,6 +2248,9 @@ struct SoloMuteButton: View {
                 )
         }
         .buttonStyle(PlainButtonStyle())
+        .accessibilityLabel(accessibilityLabelText)
+        .accessibilityHint(accessibilityHintText)
+        .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
     }
 }
 

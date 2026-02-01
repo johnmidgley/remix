@@ -18,6 +18,7 @@ struct LicensesView: View {
                         .imageScale(.large)
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
             }
             .padding()
             

@@ -8,7 +8,8 @@
 # App bundles (built output)
 *.app/
 
-# Python (legacy, no longer used)
+# Python bundling (build artifacts)
+.python_bundle/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -17,6 +18,11 @@ __pycache__/
 *.egg
 venv/
 .venv/
+env/
+ENV/
+build/
+dist/
+*.whl
 
 # Xcode
 *.xcodeproj/

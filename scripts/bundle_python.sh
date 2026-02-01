@@ -93,14 +93,38 @@ echo -e "${GREEN}✓ Found Python $PYTHON_VERSION${NC}"
 PYTHON_PATH=$("$PYTHON_CMD" -c "import sys; print(sys.executable)")
 echo "  Path: $PYTHON_PATH"
 
+# Check if this is Xcode's Python (which has limitations)
+if [[ "$PYTHON_PATH" == *"Xcode"* ]] || [[ "$PYTHON_PATH" == *"CommandLineTools"* ]]; then
+    echo ""
+    echo -e "${YELLOW}⚠ Warning: Using Xcode's Python${NC}"
+    echo "Xcode's Python has limitations for creating standalone bundles."
+    echo ""
+    echo "Recommendation: Install Homebrew Python for better bundling:"
+    echo "  brew install python3"
+    echo "  Then rebuild: ./build-macos-app.sh"
+    echo ""
+    echo "Continuing with Xcode Python (may use symlinks instead of copies)..."
+    sleep 2
+fi
+
 # Create virtual environment for bundling
 echo ""
 echo "Creating isolated environment..."
 VENV_DIR="$PROJECT_DIR/.python_bundle"
 rm -rf "$VENV_DIR"
 
-# Use --copies to create standalone Python binaries (not symlinks)
-"$PYTHON_CMD" -m venv --copies "$VENV_DIR"
+# Try with --copies first (for standalone binaries), fall back to symlinks if needed
+if "$PYTHON_CMD" -m venv --copies "$VENV_DIR" 2>/dev/null; then
+    echo -e "${GREEN}✓ Virtual environment created with copies${NC}"
+else
+    echo -e "${YELLOW}⚠ Falling back to symlinks (system Python limitation)${NC}"
+    "$PYTHON_CMD" -m venv "$VENV_DIR"
+    echo ""
+    echo -e "${YELLOW}Note: Using symlinks instead of copies.${NC}"
+    echo "For a truly standalone app, install Python via Homebrew:"
+    echo "  brew install python3"
+    echo ""
+fi
 
 # Activate venv
 source "$VENV_DIR/bin/activate"

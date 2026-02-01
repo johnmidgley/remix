@@ -122,6 +122,7 @@ SWIFT_SOURCES=(
     "macos-app/Remix/Sources/AudioEngine.swift"
     "macos-app/Remix/Sources/ContentView.swift"
     "macos-app/Remix/Sources/LicensesView.swift"
+    "macos-app/Remix/Sources/PreferencesView.swift"
 )
 
 HEADER_PATH="$SCRIPT_DIR/macos-app/Remix/Sources/remix.h"

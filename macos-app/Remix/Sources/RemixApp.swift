@@ -5,19 +5,42 @@ struct RemixApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var audioEngine = AudioEngine()
     @State private var showingHelp = false
+    @State private var showingAbout = false
+    @State private var showingPreferences = false
+    
+    init() {
+        // This will be called after @NSApplicationDelegateAdaptor initializes appDelegate
+    }
     
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(audioEngine)
                 .frame(minWidth: 800, minHeight: 500)
-                .background(WindowAccessor())
+                .background(WindowAccessor(audioEngine: audioEngine))
                 .sheet(isPresented: $showingHelp) {
                     HelpView(onDismiss: { showingHelp = false })
                 }
+                .sheet(isPresented: $showingAbout) {
+                    LicensesView()
+                }
+                .sheet(isPresented: $showingPreferences) {
+                    PreferencesView()
+                }
+                .onAppear {
+                    // Connect the audio engine to the app delegate
+                    appDelegate.audioEngine = audioEngine
+                }
         }
-        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1200, height: 700)
         .commands {
+            // About menu (replaces default "About" with our custom one)
+            CommandGroup(replacing: .appInfo) {
+                Button("About Remix...") {
+                    showingAbout = true
+                }
+            }
+            
             CommandGroup(replacing: .newItem) {
                 Button("Open...") {
                     audioEngine.openFile()
@@ -60,6 +83,14 @@ struct RemixApp: App {
                 .disabled(!audioEngine.hasSession)
             }
             
+            // Preferences menu (standard location in app menu on macOS)
+            CommandGroup(after: .appInfo) {
+                Button("Preferences...") {
+                    showingPreferences = true
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+            
             CommandMenu("Transport") {
                 Button(audioEngine.isPlaying ? "Pause" : "Play") {
                     audioEngine.togglePlayback()
@@ -86,6 +117,22 @@ struct RemixApp: App {
                     showingHelp = true
                 }
                 .keyboardShortcut("?", modifiers: .command)
+                
+                Divider()
+                
+                Button("Acknowledgments") {
+                    showingAbout = true
+                }
+                
+                Link("GitHub Repository", destination: URL(string: "https://github.com/yourusername/remix")!)
+            }
+            
+            // Window menu (standard macOS window management)
+            CommandGroup(after: .windowArrangement) {
+                Button("Enter Full Screen") {
+                    NSApp.keyWindow?.toggleFullScreen(nil)
+                }
+                .keyboardShortcut("f", modifiers: [.command, .control])
             }
         }
     }
@@ -94,6 +141,7 @@ struct RemixApp: App {
 // MARK: - Help View
 struct HelpView: View {
     let onDismiss: () -> Void
+    @FocusState private var isFocused: Bool
     
     var body: some View {
         VStack(spacing: 0) {
@@ -111,6 +159,7 @@ struct HelpView: View {
                         .foregroundColor(.gray)
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
             }
             .padding()
             .background(Color(hex: "2d2d2d"))
@@ -245,8 +294,31 @@ struct HelpView: View {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    var audioEngine: AudioEngine?
+    
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
+    }
+    
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Check if audio is currently playing
+        if let engine = audioEngine, engine.isPlaying {
+            let alert = NSAlert()
+            alert.messageText = "Audio is Playing"
+            alert.informativeText = "Are you sure you want to quit? Playback will be stopped."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Quit")
+            alert.addButton(withTitle: "Cancel")
+            
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                return .terminateNow
+            } else {
+                return .terminateCancel
+            }
+        }
+        
+        return .terminateNow
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -260,6 +332,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 // Helper to access and configure NSWindow from SwiftUI
 struct WindowAccessor: NSViewRepresentable {
+    let audioEngine: AudioEngine
+    
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
@@ -271,6 +345,16 @@ struct WindowAccessor: NSViewRepresentable {
                 }
                 // Remove the new tab button
                 window.tab.accessoryView = nil
+                
+                // Restore last file path if available
+                if let lastFilePath = UserDefaults.standard.string(forKey: "lastOpenedFilePath"),
+                   FileManager.default.fileExists(atPath: lastFilePath) {
+                    let fileURL = URL(fileURLWithPath: lastFilePath)
+                    // Load the file in the background after a short delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        audioEngine.loadFile(url: fileURL)
+                    }
+                }
             }
         }
         return view
