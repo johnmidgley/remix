@@ -1,4 +1,7 @@
-# Remix
+<div align="center">
+  <img src="scripts/Remix.png" alt="Remix Icon" width="128">
+  <h1>Remix</h1>
+</div>
 
 Audio stem separation tool with a native macOS mixer interface. Uses AI-powered Demucs for professional-quality instrument separation.
 
