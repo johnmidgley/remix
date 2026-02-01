@@ -43,6 +43,7 @@ struct FileBrowserView: View {
     @EnvironmentObject var audioEngine: AudioEngine
     @State private var directoryContents: [FileItem] = []
     @State private var selectedFile: URL?
+    @State private var selectedCacheKey: String?
     @State private var quickAccessLocations: [QuickAccessItem] = []
     @State private var isShowingCache: Bool = true
     @State private var cachedItems: [CachedFileItem] = []
@@ -209,9 +210,11 @@ struct FileBrowserView: View {
                             .padding(.top, 40)
                         } else {
                             ForEach(cachedItems) { item in
-                                CachedFileRowView(item: item) {
-                                    loadCachedItem(item)
-                                }
+                                CachedFileRowView(
+                                    item: item,
+                                    isSelected: selectedCacheKey == item.cacheKey,
+                                    onTap: { loadCachedItem(item) }
+                                )
                             }
                         }
                     } else {
@@ -239,6 +242,8 @@ struct FileBrowserView: View {
         }
         .onChange(of: audioEngine.currentDirectory) { _ in
             if !isShowingCache {
+                selectedFile = nil
+                selectedCacheKey = nil
                 loadDirectory()
             }
         }
@@ -317,9 +322,11 @@ struct FileBrowserView: View {
     func handleQuickAccessTap(_ location: QuickAccessItem) {
         if location.isSpecial && location.name == "Cache" {
             isShowingCache = true
+            selectedFile = nil
             loadCachedFiles()
         } else if let url = location.url {
             isShowingCache = false
+            selectedCacheKey = nil
             audioEngine.currentDirectory = url
         }
     }
@@ -338,6 +345,9 @@ struct FileBrowserView: View {
     }
     
     func loadCachedItem(_ item: CachedFileItem) {
+        selectedCacheKey = item.cacheKey  // Select the cached item
+        selectedFile = nil  // Clear file selection
+        
         let originalURL = URL(fileURLWithPath: item.originalPath)
         // Check if original file still exists
         if FileManager.default.fileExists(atPath: item.originalPath) {
@@ -401,6 +411,7 @@ struct FileBrowserView: View {
     func navigateUp() {
         if isShowingCache {
             isShowingCache = false
+            selectedCacheKey = nil
             loadDirectory()
         } else {
             let parent = audioEngine.currentDirectory.deletingLastPathComponent()
@@ -410,17 +421,23 @@ struct FileBrowserView: View {
     
     func navigateTo(_ url: URL) {
         audioEngine.currentDirectory = url
+        selectedFile = nil
+        selectedCacheKey = nil
     }
     
     func selectFile(_ item: FileItem) {
         selectedFile = item.url
+        selectedCacheKey = nil  // Clear cache selection
     }
     
     func openItem(_ item: FileItem) {
         if item.isDirectory {
             audioEngine.currentDirectory = item.url
             selectedFile = nil
+            selectedCacheKey = nil
         } else if item.isAudioFile {
+            selectedFile = item.url  // Select the file before loading
+            selectedCacheKey = nil  // Clear cache selection
             audioEngine.loadFile(url: item.url)
         }
     }
@@ -455,6 +472,7 @@ struct QuickAccessRowView: View {
 
 struct CachedFileRowView: View {
     let item: FileBrowserView.CachedFileItem
+    let isSelected: Bool
     let onTap: () -> Void
     
     var body: some View {
@@ -490,6 +508,7 @@ struct CachedFileRowView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+        .background(isSelected ? Color(hex: "0a84ff").opacity(0.3) : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
     }
@@ -589,79 +608,83 @@ struct ToolbarView: View {
             
             Spacer()
             
-            // Center - Song name + Transport
+            // Center - Song name + Transport (fixed layout)
             VStack(spacing: 12) {
-                if let fileName = audioEngine.fileName {
-                    Text(fileName)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+                // Always reserve space for song title to keep layout stable
+                Text(audioEngine.fileName ?? " ")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .opacity(audioEngine.fileName != nil ? 1.0 : 0.0)
+                    .frame(height: 16)  // Fixed height for title
                 
                 TransportView()
             }
+            .fixedSize()  // Prevent VStack from shrinking
             
             Spacer()
             
-            // Right section - Actions
+            // Right section - Actions (fixed width)
             HStack(spacing: 12) {
-                // Playback speed (show when file is loaded or analyzed)
-                if audioEngine.hasLoadedFile || audioEngine.hasSession {
-                    HStack(spacing: 4) {
-                        Image(systemName: "speedometer")
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(hex: "888888"))
-                        
-                        Picker("", selection: Binding(
-                            get: { audioEngine.playbackRate },
-                            set: { audioEngine.setPlaybackRate($0) }
-                        )) {
-                            Text("0.5x").tag(Float(0.5))
-                            Text("0.75x").tag(Float(0.75))
-                            Text("1x").tag(Float(1.0))
-                            Text("1.25x").tag(Float(1.25))
-                            Text("1.5x").tag(Float(1.5))
-                            Text("2x").tag(Float(2.0))
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 70)
-                    }
+                // Playback speed (always reserve space)
+                HStack(spacing: 4) {
+                    Image(systemName: "speedometer")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(hex: "888888"))
                     
-                    // Pitch control
-                    HStack(spacing: 4) {
-                        Image(systemName: "tuningfork")
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(hex: "888888"))
-                        
-                        Picker("", selection: Binding(
-                            get: { audioEngine.pitch },
-                            set: { audioEngine.setPitch($0) }
-                        )) {
-                            Text("-2").tag(Float(-200))
-                            Text("-1").tag(Float(-100))
-                            Text("0").tag(Float(0))
-                            Text("+1").tag(Float(100))
-                            Text("+2").tag(Float(200))
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 60)
+                    Picker("", selection: Binding(
+                        get: { audioEngine.playbackRate },
+                        set: { audioEngine.setPlaybackRate($0) }
+                    )) {
+                        Text("0.5x").tag(Float(0.5))
+                        Text("0.75x").tag(Float(0.75))
+                        Text("1x").tag(Float(1.0))
+                        Text("1.25x").tag(Float(1.25))
+                        Text("1.5x").tag(Float(1.5))
+                        Text("2x").tag(Float(2.0))
                     }
+                    .pickerStyle(.menu)
+                    .frame(width: 70)
+                    .disabled(!(audioEngine.hasLoadedFile || audioEngine.hasSession))
                 }
+                .opacity((audioEngine.hasLoadedFile || audioEngine.hasSession) ? 1.0 : 0.0)
                 
-                // Bounce only available after analysis
-                if audioEngine.hasSession {
-                    Button(action: { audioEngine.bounceToFile() }) {
-                        Label("Bounce", systemImage: "square.and.arrow.down")
-                            .font(.system(size: 11, weight: .medium))
+                // Pitch control (always reserve space)
+                HStack(spacing: 4) {
+                    Image(systemName: "tuningfork")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(hex: "888888"))
+                    
+                    Picker("", selection: Binding(
+                        get: { audioEngine.pitch },
+                        set: { audioEngine.setPitch($0) }
+                    )) {
+                        Text("-2").tag(Float(-200))
+                        Text("-1").tag(Float(-100))
+                        Text("0").tag(Float(0))
+                        Text("+1").tag(Float(100))
+                        Text("+2").tag(Float(200))
                     }
-                    .buttonStyle(ToolbarButtonStyle())
+                    .pickerStyle(.menu)
+                    .frame(width: 60)
+                    .disabled(!(audioEngine.hasLoadedFile || audioEngine.hasSession))
                 }
+                .opacity((audioEngine.hasLoadedFile || audioEngine.hasSession) ? 1.0 : 0.0)
+                
+                // Bounce (always reserve space)
+                Button(action: { audioEngine.bounceToFile() }) {
+                    Label("Bounce", systemImage: "square.and.arrow.down")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(ToolbarButtonStyle())
+                .disabled(!audioEngine.hasSession)
+                .opacity(audioEngine.hasSession ? 1.0 : 0.0)
             }
-            .frame(minWidth: 220, alignment: .trailing)
+            .frame(width: 280, alignment: .trailing)
             .padding(.trailing, 16)
         }
-        .frame(height: 68)
+        .frame(height: 76)
         .background(
             LinearGradient(
                 colors: [Color(hex: "3d3d3d"), Color(hex: "2d2d2d")],
@@ -1281,7 +1304,7 @@ struct PreAnalysisTimelineView: View {
                         }
                 )
             }
-            .frame(height: 80)
+            .frame(height: 100)
             .padding(.horizontal, 16)
         }
         .padding(.vertical, 12)
@@ -1469,7 +1492,7 @@ struct TimelineView: View {
                         }
                 )
         }
-        .frame(height: 56)
+        .frame(height: 80)
         .background(Color(hex: "1e1e1e"))
         .overlay(
             Rectangle()
