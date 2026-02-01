@@ -661,7 +661,7 @@ struct ToolbarView: View {
             .frame(minWidth: 220, alignment: .trailing)
             .padding(.trailing, 16)
         }
-        .frame(height: 48)
+        .frame(height: 68)
         .background(
             LinearGradient(
                 colors: [Color(hex: "3d3d3d"), Color(hex: "2d2d2d")],
