@@ -54,6 +54,7 @@ Package.resolved
 
 # Generated files
 *.icns
+scripts/Remix.iconset/
 
 # Downloaded/converted models
 *.onnx
