@@ -13,7 +13,7 @@ Audio stem separation tool with a native macOS mixer interface. Uses AI-powered 
 
 ### Download Pre-built App
 
-1. Go to [Releases](https://github.com/yourusername/remix/releases)
+1. Go to [Releases](https://github.com/johnmidgley/remix/releases)
 2. Download the latest `Remix-YYYYMMDD-HASH.dmg`
 3. Open the DMG file
 4. Drag `Remix.app` to your Applications folder
