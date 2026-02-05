@@ -168,18 +168,17 @@ struct HelpView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     // Overview
                     helpSection(title: "Overview") {
-                        Text("Remix separates audio files into individual instrument stems using AI (Demucs) or spectral analysis (PCA). You can then mix, solo, mute, and export the separated tracks.")
+                        Text("Remix separates audio files into individual instrument stems using AI (Demucs). You can then mix, solo, mute, and export the separated tracks.")
                             .foregroundColor(.secondary)
                     }
                     
                     // Getting Started
                     helpSection(title: "Getting Started") {
                         VStack(alignment: .leading, spacing: 8) {
-                            helpStep("1", "Drop an audio file (WAV or MP3) onto the app, or use File → Open")
-                            helpStep("2", "Select separation mode: Demucs (AI) or PCA (Spectral)")
-                            helpStep("3", "Click Analyze to separate the tracks")
-                            helpStep("4", "Use the mixer to adjust levels, solo, or mute tracks")
-                            helpStep("5", "Export your mix with File → Bounce Mix")
+                            helpStep("1", "Drop an audio file (WAV, MP3, M4A, FLAC, AIFF, or OGG) onto the app, or use File → Open")
+                            helpStep("2", "Click Analyze to separate the tracks")
+                            helpStep("3", "Use the mixer to adjust levels, solo, or mute tracks")
+                            helpStep("4", "Export your mix with File → Bounce Mix")
                         }
                     }
                     
@@ -217,23 +216,11 @@ struct HelpView: View {
                         }
                     }
                     
-                    // Separation Modes
-                    helpSection(title: "Separation Modes") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Demucs (AI)")
-                                    .font(.headline)
-                                Text("Uses deep learning to separate into Drums, Bass, Vocals, Guitar, Keys, and Other. Requires Python and downloads ~4GB of models on first run. Best quality for music.")
-                                    .foregroundColor(.secondary)
-                                    .font(.caption)
-                            }
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("PCA (Spectral)")
-                                    .font(.headline)
-                                Text("Uses Principal Component Analysis on the spectrogram. Faster but experimental. Separates by spectral patterns rather than instruments.")
-                                    .foregroundColor(.secondary)
-                                    .font(.caption)
-                            }
+                    // How It Works
+                    helpSection(title: "How It Works") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Demucs uses deep learning to separate audio into Drums, Bass, Vocals, Guitar, Keys, and Other. Requires Python and downloads ~4GB of models on first run. Provides the best quality for music separation.")
+                                .foregroundColor(.secondary)
                         }
                     }
                 }

@@ -62,13 +62,10 @@ struct GeneralPreferencesView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Default Separation Mode:", selection: $defaultMode) {
-                    Text("Demucs (AI) - Best Quality").tag("demucs")
-                    Text("PCA (Spectral) - Faster").tag("pca")
-                }
-                .pickerStyle(.radioGroup)
+                Text("Separation Mode: Demucs (AI)")
+                    .font(.body)
                 
-                Text("Demucs provides the highest quality but requires Python and downloads models on first use (~4GB). PCA is faster but experimental.")
+                Text("Demucs uses deep learning to provide the highest quality separation. Requires Python and downloads models on first use (~4GB).")
                     .font(.caption)
                     .foregroundColor(.secondary)
             } header: {

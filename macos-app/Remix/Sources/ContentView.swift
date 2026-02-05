@@ -86,7 +86,7 @@ class KeyEventNSView: NSView {
     override var acceptsFirstResponder: Bool { true }
     
     override func keyDown(with event: NSEvent) {
-        guard let characters = event.charactersIgnoringModifiers else {
+        guard event.charactersIgnoringModifiers != nil else {
             super.keyDown(with: event)
             return
         }

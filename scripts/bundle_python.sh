@@ -40,43 +40,56 @@ echo "Creating minimal Python distribution..."
 echo "=========================================="
 
 # Find Python 3 - prefer Homebrew or python.org builds over system Python
-PYTHON_CMD=""
-
-# Try Homebrew first (more relocatable)
-for cmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/local/opt/python@*/bin/python3; do
-    if [ -f "$cmd" ]; then
-        if "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)" 2>/dev/null; then
-            PYTHON_CMD="$cmd"
-            echo -e "${GREEN}✓ Found Homebrew Python${NC}"
-            break
-        fi
+# Check if PYTHON_CMD is already set (e.g., by CI or user)
+if [ -n "$PYTHON_CMD" ] && [ -f "$PYTHON_CMD" ]; then
+    if "$PYTHON_CMD" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) and sys.version_info < (3, 14) else 1)" 2>/dev/null; then
+        PYTHON_VERSION=$("$PYTHON_CMD" --version 2>&1 | cut -d' ' -f2)
+        echo -e "${GREEN}✓ Using specified Python $PYTHON_VERSION${NC}"
+    else
+        echo -e "${YELLOW}⚠ Specified Python not suitable, searching for alternatives...${NC}"
+        PYTHON_CMD=""
     fi
-done
-
-# Try python.org installation
-if [ -z "$PYTHON_CMD" ]; then
-    for cmd in /Library/Frameworks/Python.framework/Versions/*/bin/python3; do
-        if [ -f "$cmd" ]; then
-            if "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)" 2>/dev/null; then
-                PYTHON_CMD="$cmd"
-                echo -e "${GREEN}✓ Found python.org Python${NC}"
-                break
-            fi
-        fi
-    done
 fi
 
-# Fall back to any python3
+# If not set, search for Python
 if [ -z "$PYTHON_CMD" ]; then
-    for cmd in python3 python; do
-        if command -v "$cmd" >/dev/null 2>&1; then
-            if "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)" 2>/dev/null; then
+    # Try Homebrew first (more relocatable), but skip Python 3.14+ (too new for demucs)
+    for cmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/local/opt/python@*/bin/python3; do
+        if [ -f "$cmd" ]; then
+            # Check version is >= 3.8 and < 3.14 (demucs compatibility)
+            if "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) and sys.version_info < (3, 14) else 1)" 2>/dev/null; then
                 PYTHON_CMD="$cmd"
-                echo -e "${YELLOW}⚠ Using system Python (may have framework dependencies)${NC}"
+                echo -e "${GREEN}✓ Found Homebrew Python${NC}"
                 break
             fi
         fi
     done
+
+    # Try python.org installation
+    if [ -z "$PYTHON_CMD" ]; then
+        for cmd in /Library/Frameworks/Python.framework/Versions/*/bin/python3; do
+            if [ -f "$cmd" ]; then
+                if "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) and sys.version_info < (3, 14) else 1)" 2>/dev/null; then
+                    PYTHON_CMD="$cmd"
+                    echo -e "${GREEN}✓ Found python.org Python${NC}"
+                    break
+                fi
+            fi
+        done
+    fi
+
+    # Fall back to any python3
+    if [ -z "$PYTHON_CMD" ]; then
+        for cmd in python3 python; do
+            if command -v "$cmd" >/dev/null 2>&1; then
+                if "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) and sys.version_info < (3, 14) else 1)" 2>/dev/null; then
+                    PYTHON_CMD="$cmd"
+                    echo -e "${YELLOW}⚠ Using system Python (may have framework dependencies)${NC}"
+                    break
+                fi
+            fi
+        done
+    fi
 fi
 
 if [ -z "$PYTHON_CMD" ]; then

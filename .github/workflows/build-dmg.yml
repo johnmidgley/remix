@@ -25,12 +25,20 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+      
+      - name: Ensure Python 3.12 is prioritized
+        run: |
+          # Get the full path to the Python from setup-python
+          PYTHON_PATH=$(which python3)
+          echo "PYTHON_CMD=$PYTHON_PATH" >> $GITHUB_ENV
+          echo "Using Python at: $PYTHON_PATH"
+          python3 --version
       
       - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install demucs
+          python3 -m pip install --upgrade pip
+          pip3 install demucs
       
       - name: Cache Rust dependencies
         uses: actions/cache@v3
@@ -51,6 +59,8 @@ jobs:
       - name: Build macOS app
         run: |
           chmod +x build-macos-app.sh
+          # Use the Python from setup-python
+          export PYTHON_CMD="${{ env.PYTHON_CMD }}"
           ./build-macos-app.sh
       
       - name: Create DMG

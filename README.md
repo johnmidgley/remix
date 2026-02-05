@@ -25,7 +25,7 @@ open Remix.app
 ```
 
 ### 3. Analyze Your First Track
-1. **Drag & drop** an audio file (WAV or MP3) onto the window
+1. **Drag & drop** an audio file (WAV, MP3, M4A, FLAC, AIFF, or OGG) onto the window
 2. Click **"Analyze"** to separate the track into stems
    - First run downloads the AI model (~1GB) and may take a few minutes
    - Subsequent runs are much faster, and cached files load instantly
@@ -42,7 +42,7 @@ That's it! You're now remixing. 🎵
 
 - **AI Instrument Separation**: Splits audio into 6 stems using Demucs:
   - Drums, Bass, Guitar, Keys (piano), Voice, Other
-- **Multiple Formats**: Supports WAV and MP3 input files
+- **Multiple Formats**: Supports WAV, MP3, M4A, FLAC, AIFF, and OGG input files
 - **Native macOS App**: Logic Pro-style interface with SwiftUI
 - **Smart Progress Estimation**: Learns from each analysis to provide accurate time estimates
   - Starts with 1:1 ratio (1 minute processing per 1 minute audio)
@@ -234,6 +234,6 @@ See [BUNDLED_PYTHON.md](BUNDLED_PYTHON.md) and [BUILD_STANDALONE.md](BUILD_STAND
 - **Per-song settings**: Speed, pitch, loop, and EQ settings are saved individually for each song
   - Return to any song and your preferred playback and EQ settings are restored
   - Each stem can have unique EQ curves that are remembered
-- **Supported formats**: WAV and MP3 input; output is always WAV
+- **Supported formats**: WAV, MP3, M4A, FLAC, AIFF, and OGG input; output is always WAV
 - **Progress tracking**: Real-time progress bar with time-remaining estimates
 - **Model storage**: Demucs model cached in `~/.cache/torch/hub/checkpoints/`
