@@ -9,6 +9,40 @@ Audio stem separation tool with a native macOS mixer interface. Uses AI-powered 
   <img src="Remix UI.png" alt="Remix UI" width="800">
 </div>
 
+## Installation
+
+### Download Pre-built App
+
+1. Go to [Releases](https://github.com/yourusername/remix/releases)
+2. Download the latest `Remix-YYYYMMDD-HASH.dmg`
+3. Open the DMG file
+4. Drag `Remix.app` to your Applications folder
+
+### Opening the App (Important!)
+
+Since the app is not officially signed with an Apple Developer certificate, macOS will block it the first time. Here's how to open it:
+
+**Method 1: Right-click method (Recommended)**
+1. Right-click (or Control-click) on `Remix.app`
+2. Select **"Open"** from the menu
+3. Click **"Open"** in the dialog that appears
+4. The app will now open and can be launched normally from then on
+
+**Method 2: System Settings method**
+1. Try to open the app normally (it will be blocked)
+2. Go to **System Settings** → **Privacy & Security**
+3. Scroll down and click **"Open Anyway"** next to the Remix message
+4. Click **"Open"** to confirm
+
+**Method 3: Terminal method**
+```bash
+xattr -cr /Applications/Remix.app
+```
+
+After using any of these methods once, macOS will remember your choice and allow the app to open normally.
+
+---
+
 ## Quickstart
 
 Get started with Remix in 3 steps:
