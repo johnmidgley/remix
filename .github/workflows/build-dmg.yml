@@ -9,6 +9,9 @@ on:
       - 'v*'  # Trigger on version tags (v1.0.0, v1.2.3, etc.)
   workflow_dispatch:  # Allow manual triggers
 
+permissions:
+  contents: write  # Required for creating releases
+
 jobs:
   build-macos:
     runs-on: macos-latest
