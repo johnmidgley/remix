@@ -1,0 +1,101 @@
+name: Build Remix DMG
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:  # Allow manual triggers
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install demucs
+      
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      
+      - name: Build Rust library
+        run: cargo build --release
+      
+      - name: Build macOS app
+        run: |
+          chmod +x build-macos-app.sh
+          ./build-macos-app.sh
+      
+      - name: Create DMG
+        run: |
+          # Install create-dmg if not available
+          brew install create-dmg || true
+          
+          # Create DMG
+          create-dmg \
+            --volname "Remix" \
+            --volicon "scripts/Remix.icns" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "Remix.app" 200 190 \
+            --hide-extension "Remix.app" \
+            --app-drop-link 600 185 \
+            "Remix.dmg" \
+            "Remix.app" || \
+          # Fallback if create-dmg fails
+          hdiutil create -volname "Remix" -srcfolder "Remix.app" -ov -format UDZO "Remix.dmg"
+      
+      - name: Get version info
+        id: version
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+      
+      - name: Rename DMG with version
+        run: |
+          mv Remix.dmg "Remix-${{ steps.version.outputs.date }}-${{ steps.version.outputs.sha_short }}.dmg"
+      
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Remix-macOS-${{ steps.version.outputs.date }}-${{ steps.version.outputs.sha_short }}
+          path: Remix-*.dmg
+          retention-days: 90
+      
+      - name: Create Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: Remix-*.dmg
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
