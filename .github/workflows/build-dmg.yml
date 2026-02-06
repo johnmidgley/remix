@@ -2,9 +2,6 @@ name: Build Remix DMG
 
 on:
   push:
-    branches:
-      - main
-      - master
     tags:
       - 'v*'  # Trigger on version tags (v1.0.0, v1.2.3, etc.)
   workflow_dispatch:  # Allow manual triggers
