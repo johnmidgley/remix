@@ -54,7 +54,8 @@ fi
 # If not set, search for Python
 if [ -z "$PYTHON_CMD" ]; then
     # Try Homebrew first (more relocatable), but skip Python 3.14+ (too new for demucs)
-    for cmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/local/opt/python@*/bin/python3; do
+    # Check versioned binaries (python3.13, python3.12, etc.) and opt paths before generic python3
+    for cmd in /opt/homebrew/opt/python@3.13/bin/python3.13 /opt/homebrew/opt/python@3.12/bin/python3.12 /opt/homebrew/opt/python@3.11/bin/python3.11 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11 /opt/homebrew/bin/python3 /usr/local/opt/python@*/bin/python3 /usr/local/bin/python3; do
         if [ -f "$cmd" ]; then
             # Check version is >= 3.8 and < 3.14 (demucs compatibility)
             if "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) and sys.version_info < (3, 14) else 1)" 2>/dev/null; then
@@ -93,11 +94,33 @@ if [ -z "$PYTHON_CMD" ]; then
 fi
 
 if [ -z "$PYTHON_CMD" ]; then
-    echo -e "${RED}✗ Python 3.8+ not found${NC}"
-    echo ""
-    echo "Please install Python 3.8+ from:"
-    echo "  - Homebrew: brew install python3"
-    echo "  - python.org: https://www.python.org/downloads/"
+    # Check if Python 3 exists but is too new (>= 3.14)
+    TOO_NEW_PYTHON=""
+    for cmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            if "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 14) else 1)" 2>/dev/null; then
+                TOO_NEW_PYTHON=$("$cmd" --version 2>&1 | cut -d' ' -f2)
+                break
+            fi
+        fi
+    done
+
+    if [ -n "$TOO_NEW_PYTHON" ]; then
+        echo -e "${RED}✗ Python $TOO_NEW_PYTHON is too new (demucs requires Python 3.8–3.13)${NC}"
+        echo ""
+        echo "Install a compatible version with:"
+        echo "  brew install python@3.13"
+        echo ""
+        echo "Then either:"
+        echo "  - Re-run this script (it will find python@3.13 automatically), or"
+        echo "  - Specify it explicitly: PYTHON_CMD=/opt/homebrew/bin/python3.13 ./build-macos-app.sh"
+    else
+        echo -e "${RED}✗ Python 3.8+ not found${NC}"
+        echo ""
+        echo "Please install Python 3.8–3.13 from:"
+        echo "  - Homebrew: brew install python@3.13"
+        echo "  - python.org: https://www.python.org/downloads/"
+    fi
     exit 1
 fi
 
@@ -146,7 +169,7 @@ source "$VENV_DIR/bin/activate"
 echo ""
 echo "Installing dependencies (this may take a few minutes)..."
 pip install --quiet --upgrade pip
-pip install --quiet demucs
+pip install --quiet demucs torchcodec
 
 echo -e "${GREEN}✓ Dependencies installed${NC}"
 
@@ -160,10 +183,22 @@ rm -rf "$PYTHON_DIR"
 mkdir -p "$BIN_DIR"
 mkdir -p "$LIB_DIR/python${PYTHON_VERSION_SHORT}"
 
-# Copy the entire venv (it's already self-contained)
+# Copy the Python standard library (venvs don't include it)
+echo "  Copying Python standard library..."
+STDLIB_DIR=$("$PYTHON_CMD" -c "import sysconfig; print(sysconfig.get_path('stdlib'))")
+if [ -d "$STDLIB_DIR" ]; then
+    # Copy stdlib but skip its site-packages (we'll use the venv's instead)
+    rsync -a --exclude='site-packages' "$STDLIB_DIR/" "$LIB_DIR/python${PYTHON_VERSION_SHORT}/"
+    echo -e "${GREEN}✓ Standard library copied from $STDLIB_DIR${NC}"
+else
+    echo -e "${RED}✗ Could not find Python standard library at $STDLIB_DIR${NC}"
+    exit 1
+fi
+
+# Copy venv bin and site-packages (with demucs and dependencies)
 echo "  Copying Python environment..."
 cp -R "$VENV_DIR/bin/"* "$BIN_DIR/" 2>/dev/null || true
-cp -R "$VENV_DIR/lib/python${PYTHON_VERSION_SHORT}/"* "$LIB_DIR/python${PYTHON_VERSION_SHORT}/" 2>/dev/null || true
+cp -R "$VENV_DIR/lib/python${PYTHON_VERSION_SHORT}/site-packages" "$LIB_DIR/python${PYTHON_VERSION_SHORT}/" 2>/dev/null || true
 
 # Also copy any dylibs from the lib directory root
 if [ -d "$VENV_DIR/lib" ]; then
