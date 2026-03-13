@@ -274,35 +274,70 @@ chmod +x "$BIN_DIR/python-wrapper.sh"
 # Deactivate venv
 deactivate
 
+# Make bundled Python standalone by fixing framework dependencies
+echo ""
+echo "Making bundled Python standalone..."
+
+# Check if python3 binary links to an external framework (e.g., Homebrew Python.framework)
+FRAMEWORK_LINK=$(otool -L "$BIN_DIR/python3" 2>/dev/null | grep -o '/.*Python\.framework[^ ]*' || true)
+
+if [ -n "$FRAMEWORK_LINK" ]; then
+    echo "  Python links to external framework: $FRAMEWORK_LINK"
+
+    # Extract the framework version directory (e.g., .../Python.framework/Versions/3.13)
+    FRAMEWORK_VERSION_DIR=$(echo "$FRAMEWORK_LINK" | sed 's|/Python$||')
+
+    # Copy the framework dylib as a plain .dylib into python/lib/
+    echo "  Copying libpython dylib..."
+    cp "$FRAMEWORK_VERSION_DIR/Python" "$LIB_DIR/libPython.dylib"
+
+    # The python3 binary has a hardcoded relative path "Resources/Python.app/Contents/MacOS/Python"
+    # that it tries to posix_spawn relative to the dylib location. We need to copy Python.app too.
+    FRAMEWORK_RESOURCES="$FRAMEWORK_VERSION_DIR/Resources"
+    if [ -d "$FRAMEWORK_RESOURCES/Python.app" ]; then
+        echo "  Copying Python.app stub..."
+        mkdir -p "$LIB_DIR/Resources"
+        cp -R "$FRAMEWORK_RESOURCES/Python.app" "$LIB_DIR/Resources/"
+        # Fix Python.app's dylib reference too
+        PYTHON_APP_BIN="$LIB_DIR/Resources/Python.app/Contents/MacOS/Python"
+        if [ -f "$PYTHON_APP_BIN" ]; then
+            PYTHON_APP_LINK=$(otool -L "$PYTHON_APP_BIN" 2>/dev/null | grep -o '/.*Python\.framework[^ ]*' || true)
+            if [ -n "$PYTHON_APP_LINK" ]; then
+                install_name_tool -change "$PYTHON_APP_LINK" "@loader_path/../../../../libPython.dylib" "$PYTHON_APP_BIN"
+            fi
+            codesign --force --sign - "$PYTHON_APP_BIN"
+        fi
+    fi
+
+    # Rewrite the python3 binary to use the bundled dylib via @loader_path
+    # python3 is at: Contents/Resources/python/bin/python3
+    # dylib is at:   Contents/Resources/python/lib/libPython.dylib
+    # So from bin/ -> ../lib/
+    install_name_tool -change "$FRAMEWORK_LINK" "@loader_path/../lib/libPython.dylib" "$BIN_DIR/python3"
+
+    # Re-sign both after modification (install_name_tool invalidates the code signature)
+    codesign --force --sign - "$LIB_DIR/libPython.dylib"
+    codesign --force --sign - "$BIN_DIR/python3"
+
+    echo -e "${GREEN}✓ Python dylib bundled and paths rewritten${NC}"
+
+    # Verify the rewrite
+    echo "  Verifying..."
+    NEW_LINK=$(otool -L "$BIN_DIR/python3" 2>/dev/null | grep -i "python" | head -1)
+    echo "  python3 now links to: $NEW_LINK"
+else
+    echo -e "${GREEN}✓ Python binary has no external framework dependencies${NC}"
+fi
+
 # Test if bundled Python works
 echo ""
 echo "Testing bundled Python..."
-if ! "$BIN_DIR/python-wrapper.sh" -c "import sys; print('Python works!')" > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠ Python needs framework dependencies${NC}"
-    
-    # Check if Python is framework-based
-    PYTHON_FRAMEWORK=$(otool -L "$BIN_DIR/python3" 2>/dev/null | grep "Python3.framework" || true)
-    
-    if [ -n "$PYTHON_FRAMEWORK" ]; then
-        echo "  Copying Python.framework..."
-        FRAMEWORKS_DIR="$(dirname "$(dirname "$PYTHON_DIR")")/Frameworks"
-        mkdir -p "$FRAMEWORKS_DIR"
-        
-        # Find the framework path
-        FRAMEWORK_PATH=$("$VENV_DIR/bin/python3" -c "import sys, os; print(os.path.dirname(os.path.dirname(sys.executable)))" 2>/dev/null || echo "")
-        
-        if [ -d "$FRAMEWORK_PATH" ] && [[ "$FRAMEWORK_PATH" == *"Python.framework"* ]]; then
-            # Copy minimal framework
-            cp -R "$FRAMEWORK_PATH" "$FRAMEWORKS_DIR/" 2>/dev/null || true
-            echo -e "${GREEN}✓ Framework copied${NC}"
-        else
-            echo -e "${YELLOW}⚠ Could not locate Python.framework${NC}"
-            echo "  Bundled Python may not work standalone."
-            echo "  Consider installing Python from Homebrew: brew install python3"
-        fi
-    fi
-else
+if "$BIN_DIR/python-wrapper.sh" -c "import sys; print('Python works!')" > /dev/null 2>&1; then
     echo -e "${GREEN}✓ Bundled Python works!${NC}"
+else
+    echo -e "${RED}✗ Bundled Python failed to run${NC}"
+    echo "  Debug: running python-wrapper.sh directly..."
+    "$BIN_DIR/python-wrapper.sh" -c "import sys; print(sys.version)" 2>&1 || true
 fi
 
 # Clean up temporary venv
