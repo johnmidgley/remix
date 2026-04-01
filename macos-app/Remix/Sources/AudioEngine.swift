@@ -37,16 +37,13 @@ class CacheManager {
         try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
     }
     
-    /// Generate a unique cache key for a file based on path, size, and modification date
+    /// Generate a unique cache key for a file based on its content hash
     func cacheKey(for fileURL: URL) -> String? {
-        guard let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
-              let fileSize = attributes[.size] as? Int64,
-              let modDate = attributes[.modificationDate] as? Date else {
+        guard let fileData = try? Data(contentsOf: fileURL) else {
             return nil
         }
-        
-        let identifier = "\(fileURL.path)|\(fileSize)|\(modDate.timeIntervalSince1970)"
-        let hash = SHA256.hash(data: Data(identifier.utf8))
+
+        let hash = SHA256.hash(data: fileData)
         return hash.compactMap { String(format: "%02x", $0) }.joined().prefix(32).description
     }
     
