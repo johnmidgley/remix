@@ -810,15 +810,12 @@ class AudioEngine: ObservableObject {
             }
             
             DispatchQueue.main.async {
-                // Clean up original audio player
-                self.cleanupOriginalPlayer()
-                
                 self.audioBuffers = buffers
                 self.stemNames = names
                 self.componentCount = buffers.count
                 self.sampleRate = metadata.sampleRate
                 self.duration = metadata.duration
-                
+
                 self.faderValues = Array(repeating: 1.0, count: buffers.count)
                 self.panValues = Array(repeating: 0.0, count: buffers.count)
                 self.soloStates = Array(repeating: false, count: buffers.count)
@@ -826,11 +823,11 @@ class AudioEngine: ObservableObject {
                 self.meterLevels = Array(repeating: 0.0, count: buffers.count)
                 self.selectionStart = 0
                 self.selectionEnd = 0
-                
+
                 self.setupPlayerNodes()
                 self.setupEQMeterTap()  // Reinstall tap after engine is started
                 self.computeWaveformSamples()
-                
+
                 self.hasLoadedFile = false
                 self.hasSession = true
                 self.loadedFromCache = true
@@ -838,10 +835,44 @@ class AudioEngine: ObservableObject {
                 self.processingStatus = ""
                 self.processingProgress = 1
                 self.estimatedTimeRemaining = 0
+
+                // Also load the pristine original so the "all faders at top"
+                // shortcut can bypass the stem sum.
+                self.loadOriginalBufferForSession(url: url)
             }
         }
     }
-    
+
+    /// Loads the pristine original audio file into the original player node
+    /// so it can be used as a bypass source when the mixer has no
+    /// modifications. Safe to call when the session is already active —
+    /// unlike loadOriginalAudio(url:), this leaves hasSession/hasLoadedFile
+    /// untouched.
+    ///
+    /// If the user is already playing when this finishes, shouldPlayOriginal()
+    /// will keep returning false (the original isn't scheduled) until the next
+    /// play cycle — simpler than reconciling a mid-playback start.
+    private func loadOriginalBufferForSession(url: URL) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            do {
+                let file = try AVAudioFile(forReading: url)
+                let format = file.processingFormat
+                let frameCount = AVAudioFrameCount(file.length)
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+                try file.read(into: buffer)
+
+                DispatchQueue.main.async {
+                    self.originalAudioBuffer = buffer
+                    self.setupOriginalPlayerNode(buffer: buffer)
+                    self.updateMasterSource()
+                }
+            } catch {
+                NSLog("Failed to load original for session: %@", error.localizedDescription)
+            }
+        }
+    }
+
     /// Re-analyze the file, ignoring cache
     func reanalyze() {
         NSLog("🎵 === RE-ANALYZE CALLED ===")
@@ -1227,10 +1258,10 @@ class AudioEngine: ObservableObject {
             
             // Stop progress timer
             self.stopProgressTimer()
-            
-            // Clean up original audio player (no longer needed after analysis)
-            self.cleanupOriginalPlayer()
-            
+
+            // Keep the original player alive — it's used when the mixer is
+            // in a "no modifications" state (see shouldPlayOriginal()).
+
             self.audioBuffers = buffers
             self.stemNames = names
             self.componentCount = buffers.count
@@ -1510,9 +1541,9 @@ class AudioEngine: ObservableObject {
         for (i, player) in playerNodes.enumerated() {
             guard i < audioBuffers.count else { continue }
             let buffer = audioBuffers[i]
-            
+
             player.stop()
-            
+
             if clampedLength > 0 {
                 if let sliced = sliceBuffer(buffer, start: clampedStartFrame, length: clampedLength) {
                     player.scheduleBuffer(sliced, at: nil, options: [])
@@ -1522,17 +1553,48 @@ class AudioEngine: ObservableObject {
             } else {
                 player.scheduleBuffer(buffer, at: nil, options: [])
             }
-            
+
             updateGain(for: i)
             updatePan(for: i)
             player.play()
         }
-        
+
+        // Also run the pristine original in parallel. It plays silently
+        // unless the mixer is in a "no modifications" state (see
+        // shouldPlayOriginal()), in which case it takes over from the sum
+        // of stems.
+        if let origPlayer = originalPlayerNode, let origBuffer = originalAudioBuffer {
+            let origTotalFrames = Int(origBuffer.frameLength)
+            let origStartFrame: Int
+            let origLength: Int
+            if hasRegion {
+                let regionStartFrame = Int(Double(origTotalFrames) * (selectionStart / duration))
+                let regionEndFrame = Int(Double(origTotalFrames) * (selectionEnd / duration))
+                let currentFrame = Int(Double(origTotalFrames) * (pauseTime / duration))
+                origStartFrame = max(regionStartFrame, min(regionEndFrame, currentFrame))
+                origLength = regionEndFrame - origStartFrame
+            } else {
+                origStartFrame = duration > 0 ? Int(Double(origTotalFrames) * (pauseTime / duration)) : 0
+                origLength = origTotalFrames - origStartFrame
+            }
+            let clampedOrigStart = max(0, min(origTotalFrames, origStartFrame))
+            let clampedOrigLength = max(0, min(origTotalFrames - clampedOrigStart, origLength))
+
+            origPlayer.stop()
+            if clampedOrigLength > 0, let sliced = sliceBuffer(origBuffer, start: clampedOrigStart, length: clampedOrigLength) {
+                origPlayer.scheduleBuffer(sliced, at: nil, options: [])
+            } else {
+                origPlayer.scheduleBuffer(origBuffer, at: nil, options: [])
+            }
+            updateMasterSource()
+            origPlayer.play()
+        }
+
         isPlaying = true
         startTime = CACurrentMediaTime() - pauseTime
         startTimer()
     }
-    
+
     private func playOriginalAudio() {
         guard let buffer = originalAudioBuffer, let player = originalPlayerNode else { return }
         if isPlaying { return }
@@ -1600,25 +1662,27 @@ class AudioEngine: ObservableObject {
     
     func pause() {
         pauseTime = CACurrentMediaTime() - startTime
-        
+
         if hasSession {
             for player in playerNodes { player.pause() }
+            originalPlayerNode?.pause()
         } else {
             originalPlayerNode?.pause()
         }
-        
+
         isPlaying = false
         // Don't stop timer - let meters decay naturally
         startMeterDecayTimer()
     }
-    
+
     func stop() {
         if hasSession {
             for player in playerNodes { player.stop() }
+            originalPlayerNode?.stop()
         } else {
             originalPlayerNode?.stop()
         }
-        
+
         isPlaying = false
         // Don't stop timer - let meters decay naturally
         startMeterDecayTimer()
@@ -1642,26 +1706,29 @@ class AudioEngine: ObservableObject {
     func setFaderValue(_ value: Double, for index: Int) {
         guard index < faderValues.count else { return }
         faderValues[index] = value
-        
-        updateGain(for: index)
+
+        // A single fader move can cross the "all at max" threshold, so we
+        // re-evaluate every stem gain plus the master-source toggle.
+        updateAllGains()
     }
-    
+
     func setPanValue(_ value: Double, for index: Int) {
         guard index < panValues.count else { return }
         panValues[index] = max(-1.0, min(1.0, value))
         updatePan(for: index)
+        updateAllGains()
     }
-    
+
     func toggleSolo(for index: Int) {
         guard index < soloStates.count else { return }
         soloStates[index].toggle()
         updateAllGains()
     }
-    
+
     func toggleMute(for index: Int) {
         guard index < muteStates.count else { return }
         muteStates[index].toggle()
-        updateGain(for: index)
+        updateAllGains()
     }
     
     func resetAllFaders() {
@@ -1832,25 +1899,59 @@ class AudioEngine: ObservableObject {
     
     private func updateGain(for index: Int) {
         guard index < playerNodes.count else { return }
-        
+
         let hasSolo = soloStates.contains(true)
         var gain = faderValues[index]
-        
+
         if muteStates[index] || (hasSolo && !soloStates[index]) {
             gain = 0
         }
-        
+
+        // Stems are silenced when the pristine original takes over — see
+        // shouldPlayOriginal().
+        if shouldPlayOriginal() {
+            gain = 0
+        }
+
         playerNodes[index].volume = Float(gain)
     }
-    
+
     private func updatePan(for index: Int) {
         guard index < playerNodes.count, index < panValues.count else { return }
         // AVAudioPlayerNode pan: -1.0 (left) to 1.0 (right)
         playerNodes[index].pan = Float(panValues[index])
     }
-    
+
     private func updateAllGains() {
         for i in 0..<playerNodes.count { updateGain(for: i) }
+        updateMasterSource()
+    }
+
+    /// Returns true when the user has made no audible modifications in the
+    /// mixer — in that case we play the pristine original file instead of
+    /// summing the demucs-separated stems (which introduces small artifacts).
+    private func shouldPlayOriginal() -> Bool {
+        guard hasSession, !faderValues.isEmpty else { return false }
+        // The original buffer may not be loaded (e.g. cached-by-key sessions
+        // where the source file is unavailable). Fall back to summed stems.
+        guard originalAudioBuffer != nil, let origPlayer = originalPlayerNode else { return false }
+        // If playback is active, the original must also be actively playing —
+        // otherwise silencing the stems would produce silence. This handles the
+        // case where the original loads asynchronously after play() was called.
+        if isPlaying && !origPlayer.isPlaying { return false }
+        let epsilon = 0.001
+        let allFadersMax = faderValues.allSatisfy { $0 >= 1.0 - epsilon }
+        let anyMuted = muteStates.contains(true)
+        let anySoloed = soloStates.contains(true)
+        let anyPanned = panValues.contains { abs($0) > epsilon }
+        return allFadersMax && !anyMuted && !anySoloed && !anyPanned
+    }
+
+    /// Cross-fades between the pristine original player and the stem sum by
+    /// toggling the original's output volume. Stem volumes are handled by
+    /// updateGain(for:).
+    private func updateMasterSource() {
+        originalPlayerNode?.volume = shouldPlayOriginal() ? 1.0 : 0.0
     }
     
     private func updateAllPans() {
@@ -2002,6 +2103,7 @@ class AudioEngine: ObservableObject {
         // Stop current playback without resetting state
         if hasSession {
             for player in playerNodes { player.stop() }
+            originalPlayerNode?.stop()
         } else {
             originalPlayerNode?.stop()
         }
