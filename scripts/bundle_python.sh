@@ -214,6 +214,121 @@ cd - > /dev/null
 
 echo -e "${GREEN}✓ Python environment copied${NC}"
 
+# ==========================================
+# Bundle FFmpeg libraries for torchcodec
+# ==========================================
+echo ""
+echo "Bundling FFmpeg libraries for audio processing..."
+
+# Find or install FFmpeg via Homebrew
+FFMPEG_LIB_DIR=""
+HOMEBREW_PREFIX=""
+if command -v brew >/dev/null 2>&1; then
+    HOMEBREW_PREFIX=$(brew --prefix)
+    FFMPEG_PREFIX=$(brew --prefix ffmpeg 2>/dev/null || true)
+    if [ -n "$FFMPEG_PREFIX" ] && [ -d "$FFMPEG_PREFIX/lib" ]; then
+        FFMPEG_LIB_DIR="$FFMPEG_PREFIX/lib"
+    else
+        echo "  FFmpeg not found. Installing via Homebrew..."
+        brew install ffmpeg
+        FFMPEG_PREFIX=$(brew --prefix ffmpeg)
+        FFMPEG_LIB_DIR="$FFMPEG_PREFIX/lib"
+    fi
+fi
+
+if [ -z "$FFMPEG_LIB_DIR" ] || [ ! -d "$FFMPEG_LIB_DIR" ]; then
+    echo -e "${RED}✗ Could not find or install FFmpeg${NC}"
+    echo "Please install Homebrew (https://brew.sh) and FFmpeg: brew install ffmpeg"
+    exit 1
+fi
+
+echo "  Using FFmpeg from: $FFMPEG_LIB_DIR"
+
+# Copy versioned FFmpeg dylibs (e.g., libavutil.60.dylib), following symlinks
+# We only want the short versioned names (N or NN), not the full versions (N.N.N)
+FFMPEG_COMPONENTS=(libavutil libavcodec libavformat libavdevice libavfilter libswscale libswresample)
+COPIED_FFMPEG_LIBS=()
+for component in "${FFMPEG_COMPONENTS[@]}"; do
+    for dylib in "$FFMPEG_LIB_DIR"/${component}.[0-9].dylib "$FFMPEG_LIB_DIR"/${component}.[0-9][0-9].dylib; do
+        if [ -f "$dylib" ]; then
+            cp -L "$dylib" "$LIB_DIR/"
+            COPIED_FFMPEG_LIBS+=("$(basename "$dylib")")
+            echo "  Copied $(basename "$dylib")"
+        fi
+    done
+done
+
+if [ ${#COPIED_FFMPEG_LIBS[@]} -eq 0 ]; then
+    echo -e "${RED}✗ No FFmpeg libraries found in $FFMPEG_LIB_DIR${NC}"
+    exit 1
+fi
+
+# Recursively copy transitive Homebrew dependencies that FFmpeg dylibs need
+echo "  Resolving transitive Homebrew dependencies..."
+copy_homebrew_deps() {
+    local lib="$1"
+    for dep in $(otool -L "$lib" 2>/dev/null | awk '{print $1}' | grep "^$HOMEBREW_PREFIX"); do
+        local dep_basename
+        dep_basename=$(basename "$dep")
+        if [ ! -f "$LIB_DIR/$dep_basename" ]; then
+            if [ -f "$dep" ]; then
+                cp -L "$dep" "$LIB_DIR/"
+                echo "    Copied dependency: $dep_basename"
+                copy_homebrew_deps "$LIB_DIR/$dep_basename"
+            fi
+        fi
+    done
+}
+
+for lib in "${COPIED_FFMPEG_LIBS[@]}"; do
+    copy_homebrew_deps "$LIB_DIR/$lib"
+done
+
+# Fix install names for all Homebrew-origin libraries we just copied
+echo "  Fixing library paths for relocatability..."
+for dylib in "$LIB_DIR"/lib*.dylib; do
+    if [ -f "$dylib" ]; then
+        dylib_basename=$(basename "$dylib")
+        # Skip libPython which was already handled
+        if [ "$dylib_basename" = "libPython.dylib" ]; then
+            continue
+        fi
+
+        # Fix the library's own install name to use @rpath
+        install_name_tool -id "@rpath/$dylib_basename" "$dylib" 2>/dev/null || true
+
+        # Rewrite any absolute Homebrew references to use @rpath
+        otool -L "$dylib" 2>/dev/null | awk '{print $1}' | grep -E "^/opt/homebrew|^/usr/local/opt" | while read -r ref; do
+            ref_basename=$(basename "$ref")
+            install_name_tool -change "$ref" "@rpath/$ref_basename" "$dylib" 2>/dev/null || true
+        done
+
+        # Add @loader_path rpath so FFmpeg dylibs can find each other (same directory)
+        install_name_tool -add_rpath "@loader_path" "$dylib" 2>/dev/null || true
+
+        codesign --force --sign - "$dylib" 2>/dev/null || true
+    fi
+done
+
+# Fix torchcodec rpaths so it can find FFmpeg in our bundle's lib/ directory
+TORCHCODEC_DIR="$LIB_DIR/python${PYTHON_VERSION_SHORT}/site-packages/torchcodec"
+if [ -d "$TORCHCODEC_DIR" ]; then
+    echo "  Updating torchcodec library paths..."
+    for dylib in "$TORCHCODEC_DIR"/libtorchcodec_*.dylib "$TORCHCODEC_DIR"/libtorchcodec_*.so; do
+        if [ -f "$dylib" ]; then
+            # Remove any absolute Homebrew rpaths
+            otool -l "$dylib" 2>/dev/null | grep -A2 "LC_RPATH" | grep "path " | awk '{print $2}' | grep -E "^/opt/homebrew|^/usr/local" | while read -r old_rpath; do
+                install_name_tool -delete_rpath "$old_rpath" "$dylib" 2>/dev/null || true
+            done
+            # Add relative rpath: from torchcodec/ → site-packages/ → python3.x/ → lib/
+            install_name_tool -add_rpath "@loader_path/../../.." "$dylib" 2>/dev/null || true
+            codesign --force --sign - "$dylib" 2>/dev/null || true
+        fi
+    done
+fi
+
+echo -e "${GREEN}✓ FFmpeg libraries bundled${NC}"
+
 # Clean up unnecessary files to reduce size
 echo ""
 echo "Pruning unnecessary files..."
