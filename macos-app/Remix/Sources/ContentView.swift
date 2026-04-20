@@ -1510,13 +1510,15 @@ struct PreAnalysisTimelineView: View {
 // MARK: - Mixer View
 struct MixerView: View {
     @EnvironmentObject var audioEngine: AudioEngine
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Timeline
             TimelineView()
-            
-            // Channel strips - centered with spacing
+
+            // Channel strips - centered with spacing, with a Reset control
+            // floating in the top-right so it reads as part of this pane
+            // rather than the timeline above.
             GeometryReader { geometry in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
@@ -1524,14 +1526,26 @@ struct MixerView: View {
                         ForEach(0..<max(0, audioEngine.componentCount - 1), id: \.self) { index in
                             ChannelStripView(index: index)
                         }
-                        
+
                         // The last channel (Other)
                         if audioEngine.componentCount > 0 {
                             ChannelStripView(index: audioEngine.componentCount - 1)
                         }
                     }
                     .padding(.horizontal, 20)
+                    .padding(.top, 36)
                     .frame(minWidth: geometry.size.width, alignment: .center)
+                }
+                .overlay(alignment: .topTrailing) {
+                    if audioEngine.componentCount > 0 {
+                        Button("Reset") {
+                            audioEngine.resetAllFaders()
+                        }
+                        .buttonStyle(SecondaryToolbarButtonStyle())
+                        .help("Reset all sliders, pans, solos, and mutes to defaults")
+                        .padding(.top, 8)
+                        .padding(.trailing, 12)
+                    }
                 }
             }
             .frame(maxWidth: .infinity)
