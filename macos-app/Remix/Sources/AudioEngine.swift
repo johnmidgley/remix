@@ -342,7 +342,21 @@ class AudioEngine: ObservableObject {
     private var originalMeterNode: AVAudioMixerNode?
     
     // Click track is now managed as a regular audio buffer in audioBuffers[]
-    
+
+    // Pending per-stem mixer values loaded from persisted song settings.
+    // loadSongSettings() runs before the stems are actually wired up, so we
+    // stash the values here and apply them keyed by stem display name once
+    // the stems appear.
+    private var pendingFaderValues: [String: Double] = [:]
+    private var pendingPanValues: [String: Double] = [:]
+    private var pendingMuteStates: [String: Bool] = [:]
+    private var pendingSoloStates: [String: Bool] = [:]
+    // Playhead/selection are also loaded before duration is known, so we stash
+    // them here and clamp-apply once the audio is wired up.
+    private var pendingPlayheadPosition: Double = 0
+    private var pendingSelectionStart: Double = 0
+    private var pendingSelectionEnd: Double = 0
+
     // Demucs stem order
     static let demucsStems = ["drums", "bass", "guitar", "piano", "vocals", "other"]
     static let demucsDisplayNames = ["Drums", "Bass", "Guitar", "Keys", "Voice", "Other"]
@@ -372,6 +386,61 @@ class AudioEngine: ObservableObject {
         var pitch: Float = 0.0
         var isLooping: Bool = false
         var eqSettings: [String: EQBandSettings] = [:]  // Key: stem name or "master"
+        // Per-stem mixer state, keyed by stem display name so order changes
+        // don't misalign values. Missing keys fall back to defaults when
+        // applied to a fresh stem set.
+        var faderValues: [String: Double] = [:]
+        var panValues: [String: Double] = [:]
+        var muteStates: [String: Bool] = [:]
+        var soloStates: [String: Bool] = [:]
+        // Playhead and loop-region state so a song reopens where it was left.
+        var playheadPosition: Double = 0
+        var selectionStart: Double = 0
+        var selectionEnd: Double = 0
+
+        init(
+            playbackRate: Float = 1.0,
+            pitch: Float = 0.0,
+            isLooping: Bool = false,
+            eqSettings: [String: EQBandSettings] = [:],
+            faderValues: [String: Double] = [:],
+            panValues: [String: Double] = [:],
+            muteStates: [String: Bool] = [:],
+            soloStates: [String: Bool] = [:],
+            playheadPosition: Double = 0,
+            selectionStart: Double = 0,
+            selectionEnd: Double = 0
+        ) {
+            self.playbackRate = playbackRate
+            self.pitch = pitch
+            self.isLooping = isLooping
+            self.eqSettings = eqSettings
+            self.faderValues = faderValues
+            self.panValues = panValues
+            self.muteStates = muteStates
+            self.soloStates = soloStates
+            self.playheadPosition = playheadPosition
+            self.selectionStart = selectionStart
+            self.selectionEnd = selectionEnd
+        }
+
+        // Custom decoder: every field is decodeIfPresent so saved blobs from
+        // earlier app versions (missing the newer fields) still load without
+        // losing the fields they do contain.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            playbackRate = try c.decodeIfPresent(Float.self, forKey: .playbackRate) ?? 1.0
+            pitch = try c.decodeIfPresent(Float.self, forKey: .pitch) ?? 0.0
+            isLooping = try c.decodeIfPresent(Bool.self, forKey: .isLooping) ?? false
+            eqSettings = try c.decodeIfPresent([String: EQBandSettings].self, forKey: .eqSettings) ?? [:]
+            faderValues = try c.decodeIfPresent([String: Double].self, forKey: .faderValues) ?? [:]
+            panValues = try c.decodeIfPresent([String: Double].self, forKey: .panValues) ?? [:]
+            muteStates = try c.decodeIfPresent([String: Bool].self, forKey: .muteStates) ?? [:]
+            soloStates = try c.decodeIfPresent([String: Bool].self, forKey: .soloStates) ?? [:]
+            playheadPosition = try c.decodeIfPresent(Double.self, forKey: .playheadPosition) ?? 0
+            selectionStart = try c.decodeIfPresent(Double.self, forKey: .selectionStart) ?? 0
+            selectionEnd = try c.decodeIfPresent(Double.self, forKey: .selectionEnd) ?? 0
+        }
     }
     
     struct EQBandSettings: Codable {
@@ -418,9 +487,20 @@ class AudioEngine: ObservableObject {
         }
         
         setupAudioEngine()
-        
+
         // Restore global UI settings only
         restoreGlobalSettings()
+
+        // Save the current track's settings on app quit. Together with the
+        // save at the top of cleanup() (which runs when the user switches
+        // tracks), this covers every way a track can be "left".
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.saveCurrentSongSettings()
+        }
     }
     
     private func restoreGlobalSettings() {
@@ -434,31 +514,48 @@ class AudioEngine: ObservableObject {
     
     private func saveCurrentSongSettings() {
         guard let songKey = currentSongKey else { return }
-        
+
+        // Project the runtime arrays onto stem-name-keyed dicts. If arrays
+        // and stemNames drift out of sync for any reason we just skip the
+        // missing entries rather than write garbage.
+        var savedFaders: [String: Double] = [:]
+        var savedPans: [String: Double] = [:]
+        var savedMutes: [String: Bool] = [:]
+        var savedSolos: [String: Bool] = [:]
+        for (i, name) in stemNames.enumerated() {
+            if i < faderValues.count { savedFaders[name] = faderValues[i] }
+            if i < panValues.count { savedPans[name] = panValues[i] }
+            if i < muteStates.count { savedMutes[name] = muteStates[i] }
+            if i < soloStates.count { savedSolos[name] = soloStates[i] }
+        }
+
         let settings = SongSettings(
             playbackRate: playbackRate,
             pitch: pitch,
             isLooping: isLooping,
-            eqSettings: eqSettings
+            eqSettings: eqSettings,
+            faderValues: savedFaders,
+            panValues: savedPans,
+            muteStates: savedMutes,
+            soloStates: savedSolos,
+            // Prefer pauseTime when paused (slightly more precise than the
+            // display-throttled currentTime); otherwise currentTime.
+            playheadPosition: isPlaying ? currentTime : max(pauseTime, currentTime),
+            selectionStart: selectionStart,
+            selectionEnd: selectionEnd
         )
-        
+
         if let encoded = try? JSONEncoder().encode(settings) {
             UserDefaults.standard.set(encoded, forKey: "song_settings_\(songKey)")
         }
     }
-    
+
     private func loadSongSettings() {
         guard let songKey = currentSongKey else {
-            // Reset to defaults if no song
-            playbackRate = 1.0
-            pitch = 0.0
-            isLooping = false
-            eqSettings = [:]
-            timePitchNode?.rate = 1.0
-            timePitchNode?.pitch = 0.0
+            resetSongSettingsToDefaults()
             return
         }
-        
+
         // Try to load saved settings for this song
         if let data = UserDefaults.standard.data(forKey: "song_settings_\(songKey)"),
            let settings = try? JSONDecoder().decode(SongSettings.self, from: data) {
@@ -466,18 +563,71 @@ class AudioEngine: ObservableObject {
             pitch = settings.pitch
             isLooping = settings.isLooping
             eqSettings = settings.eqSettings
+            pendingFaderValues = settings.faderValues
+            pendingPanValues = settings.panValues
+            pendingMuteStates = settings.muteStates
+            pendingSoloStates = settings.soloStates
+            pendingPlayheadPosition = settings.playheadPosition
+            pendingSelectionStart = settings.selectionStart
+            pendingSelectionEnd = settings.selectionEnd
             timePitchNode?.rate = settings.playbackRate
             timePitchNode?.pitch = settings.pitch
             applyEQSettings()
         } else {
-            // Use defaults for new song
-            playbackRate = 1.0
-            pitch = 0.0
-            isLooping = false
-            eqSettings = [:]
-            timePitchNode?.rate = 1.0
-            timePitchNode?.pitch = 0.0
+            resetSongSettingsToDefaults()
         }
+    }
+
+    private func resetSongSettingsToDefaults() {
+        playbackRate = 1.0
+        pitch = 0.0
+        isLooping = false
+        eqSettings = [:]
+        pendingFaderValues = [:]
+        pendingPanValues = [:]
+        pendingMuteStates = [:]
+        pendingSoloStates = [:]
+        pendingPlayheadPosition = 0
+        pendingSelectionStart = 0
+        pendingSelectionEnd = 0
+        timePitchNode?.rate = 1.0
+        timePitchNode?.pitch = 0.0
+    }
+
+    /// Applies the pending playhead/selection values clamped to the current
+    /// duration. Call after duration has been set from the loaded audio.
+    private func applyPendingPlaybackPosition() {
+        guard duration > 0 else {
+            currentTime = 0
+            pauseTime = 0
+            selectionStart = 0
+            selectionEnd = 0
+            return
+        }
+        let clampedPos = max(0, min(duration, pendingPlayheadPosition))
+        let clampedSelStart = max(0, min(duration, pendingSelectionStart))
+        let clampedSelEnd = max(0, min(duration, pendingSelectionEnd))
+        currentTime = clampedPos
+        pauseTime = clampedPos
+        // Only keep a selection if it's still a non-empty range after clamp.
+        if clampedSelEnd > clampedSelStart {
+            selectionStart = clampedSelStart
+            selectionEnd = clampedSelEnd
+        } else {
+            selectionStart = 0
+            selectionEnd = 0
+        }
+    }
+
+    /// Produces mixer arrays aligned to the given stem names, drawing from
+    /// the last-loaded persisted settings (pending*) and filling gaps with
+    /// defaults.
+    private func mixerArrays(for names: [String]) -> (faders: [Double], pans: [Double], mutes: [Bool], solos: [Bool]) {
+        let faders = names.map { pendingFaderValues[$0] ?? 1.0 }
+        let pans = names.map { pendingPanValues[$0] ?? 0.0 }
+        let mutes = names.map { pendingMuteStates[$0] ?? false }
+        let solos = names.map { pendingSoloStates[$0] ?? false }
+        return (faders, pans, mutes, solos)
     }
     
     deinit {
@@ -735,21 +885,21 @@ class AudioEngine: ObservableObject {
             
             DispatchQueue.main.async {
                 self.cleanupOriginalPlayer()
-                
+
                 self.audioBuffers = buffers
                 self.stemNames = names
                 self.componentCount = buffers.count
                 self.sampleRate = metadata.sampleRate
                 self.duration = metadata.duration
-                
-                self.faderValues = Array(repeating: 1.0, count: buffers.count)
-                self.panValues = Array(repeating: 0.0, count: buffers.count)
-                self.soloStates = Array(repeating: false, count: buffers.count)
-                self.muteStates = Array(repeating: false, count: buffers.count)
+
+                let mixer = self.mixerArrays(for: names)
+                self.faderValues = mixer.faders
+                self.panValues = mixer.pans
+                self.muteStates = mixer.mutes
+                self.soloStates = mixer.solos
                 self.meterLevels = Array(repeating: 0.0, count: buffers.count)
-                self.selectionStart = 0
-                self.selectionEnd = 0
-                
+                self.applyPendingPlaybackPosition()
+
                 self.setupPlayerNodes()
                 self.setupEQMeterTap()  // Reinstall tap after engine is started
                 self.computeWaveformSamples()
@@ -816,13 +966,13 @@ class AudioEngine: ObservableObject {
                 self.sampleRate = metadata.sampleRate
                 self.duration = metadata.duration
 
-                self.faderValues = Array(repeating: 1.0, count: buffers.count)
-                self.panValues = Array(repeating: 0.0, count: buffers.count)
-                self.soloStates = Array(repeating: false, count: buffers.count)
-                self.muteStates = Array(repeating: false, count: buffers.count)
+                let mixer = self.mixerArrays(for: names)
+                self.faderValues = mixer.faders
+                self.panValues = mixer.pans
+                self.muteStates = mixer.mutes
+                self.soloStates = mixer.solos
                 self.meterLevels = Array(repeating: 0.0, count: buffers.count)
-                self.selectionStart = 0
-                self.selectionEnd = 0
+                self.applyPendingPlaybackPosition()
 
                 self.setupPlayerNodes()
                 self.setupEQMeterTap()  // Reinstall tap after engine is started
@@ -925,10 +1075,11 @@ class AudioEngine: ObservableObject {
                 self.originalAudioBuffer = buffer
                 self.sampleRate = detectedSampleRate
                 self.duration = detectedDuration
-                
+
                 self.setupOriginalPlayerNode(buffer: buffer)
                 self.computeWaveformFromOriginal(buffer: buffer)
-                
+                self.applyPendingPlaybackPosition()
+
                 self.hasLoadedFile = true
                 self.hasSession = false
             }
@@ -1267,19 +1418,19 @@ class AudioEngine: ObservableObject {
             self.componentCount = buffers.count
             self.sampleRate = detectedSampleRate
             self.duration = detectedDuration
-            
-            self.faderValues = Array(repeating: 1.0, count: buffers.count)
-            self.panValues = Array(repeating: 0.0, count: buffers.count)
-            self.soloStates = Array(repeating: false, count: buffers.count)
-            self.muteStates = Array(repeating: false, count: buffers.count)
+
+            let mixer = self.mixerArrays(for: names)
+            self.faderValues = mixer.faders
+            self.panValues = mixer.pans
+            self.muteStates = mixer.mutes
+            self.soloStates = mixer.solos
             self.meterLevels = Array(repeating: 0.0, count: buffers.count)
-            self.selectionStart = 0
-            self.selectionEnd = 0
-            
+            self.applyPendingPlaybackPosition()
+
             self.setupPlayerNodes()
             self.setupEQMeterTap()  // Reinstall tap after engine is started
             self.computeWaveformSamples()
-            
+
             self.hasLoadedFile = false  // No longer in pre-analysis state
             self.hasSession = true
             self.loadedFromCache = false  // Fresh analysis
@@ -1730,7 +1881,7 @@ class AudioEngine: ObservableObject {
         muteStates[index].toggle()
         updateAllGains()
     }
-    
+
     func resetAllFaders() {
         for i in 0..<componentCount {
             faderValues[i] = 1.0
@@ -1741,14 +1892,14 @@ class AudioEngine: ObservableObject {
         updateAllGains()
         updateAllPans()
     }
-    
+
     func zeroAllFaders() {
         for i in 0..<componentCount {
             faderValues[i] = 0.0
         }
         updateAllGains()
     }
-    
+
     func centerAllPans() {
         for i in 0..<componentCount {
             panValues[i] = 0.0
@@ -1771,9 +1922,6 @@ class AudioEngine: ObservableObject {
         
         // Apply to audio nodes immediately
         applyEQToNode(target: target, bandIndex: bandIndex, gain: gain, q: q)
-        
-        // Save to UserDefaults
-        saveCurrentSongSettings()
     }
     
     private func applyEQToNode(target: String, bandIndex: Int, gain: Float, q: Float) {
@@ -1858,26 +2006,20 @@ class AudioEngine: ObservableObject {
         
         // Increment counter to force UI refresh
         eqResetCounter += 1
-        
-        // Save to UserDefaults
-        saveCurrentSongSettings()
     }
-    
+
     func setPlaybackRate(_ rate: Float) {
         playbackRate = rate
         timePitchNode?.rate = rate
-        saveCurrentSongSettings()
     }
-    
+
     func setPitch(_ cents: Float) {
         pitch = max(-200, min(200, cents))
         timePitchNode?.pitch = pitch
-        saveCurrentSongSettings()
     }
-    
+
     func toggleLooping() {
         isLooping.toggle()
-        saveCurrentSongSettings()
     }
 
     func setSelection(start: Double, end: Double) {
@@ -2208,6 +2350,11 @@ class AudioEngine: ObservableObject {
     
     // MARK: - Cleanup
     private func cleanup() {
+        // Persist the current track's settings before we tear state down —
+        // this is the "leaving a track" save point. All mutation functions
+        // rely on this and on app termination; they don't save per-change.
+        saveCurrentSongSettings()
+
         stop()
         stopProgressTimer()
         
