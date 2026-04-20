@@ -1107,12 +1107,15 @@ struct TransportButton: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(isActive ? Color(hex: "30d158") : Color(hex: "888888"))
                 .frame(width: 32, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(isActive ? Color(hex: "0a84ff").opacity(0.2) : Color.clear)
+                )
+                // Without this, hit testing falls back to the SF Symbol's
+                // opaque pixels, so only the triangle/bar shape is clickable.
+                .contentShape(Rectangle())
         }
         .buttonStyle(PlainButtonStyle())
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(isActive ? Color(hex: "0a84ff").opacity(0.2) : Color.clear)
-        )
         .accessibilityLabel(accessibilityLabelText)
         .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
     }
