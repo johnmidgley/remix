@@ -319,6 +319,10 @@ class AudioEngine: ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var playerNodes: [AVAudioPlayerNode] = []
     private var mixerNode: AVAudioMixerNode?
+    // Sits between the per-stem meter taps and mixerNode. We silence its
+    // output (not the stems themselves) when the pristine original takes
+    // over, so per-stem meters still animate with their real signal.
+    private var stemOutputGate: AVAudioMixerNode?
     private var timePitchNode: AVAudioUnitTimePitch?
     private var eqNodes: [AVAudioUnitEQ] = []  // EQ for each stem
     private var masterEQNode: AVAudioUnitEQ?   // Master EQ
@@ -1534,7 +1538,7 @@ class AudioEngine: ObservableObject {
     
     private func setupPlayerNodes() {
         guard let engine = audioEngine, let mixer = mixerNode else { return }
-        
+
         // Remove existing nodes
         for node in playerNodes {
             engine.detach(node)
@@ -1546,29 +1550,41 @@ class AudioEngine: ObservableObject {
         for node in eqNodes {
             engine.detach(node)
         }
+        if let gate = stemOutputGate {
+            engine.detach(gate)
+        }
         playerNodes.removeAll()
         meterTapNodes.removeAll()
         eqNodes.removeAll()
         peakLevels = Array(repeating: 0, count: audioBuffers.count)
-        
+
+        // Shared output gate for all stems. Lives between the per-stem meter
+        // taps and mixerNode so we can silence the downstream audio via
+        // outputVolume without starving the taps (which run at the stage
+        // before this gate and therefore see the real stem signal).
+        let gate = AVAudioMixerNode()
+        engine.attach(gate)
+        stemOutputGate = gate
+
         for (index, buffer) in audioBuffers.enumerated() {
             let player = AVAudioPlayerNode()
             let eq = AVAudioUnitEQ(numberOfBands: 8)
             let meterMixer = AVAudioMixerNode()
-            
+
             engine.attach(player)
             engine.attach(eq)
             engine.attach(meterMixer)
-            
+
             // Configure EQ bands
             configureEQNode(eq)
-            
-            // Player -> EQ -> MeterMixer -> MainMixer
+
+            // Player -> EQ -> MeterMixer -> StemOutputGate -> MainMixer
             engine.connect(player, to: eq, format: buffer.format)
             engine.connect(eq, to: meterMixer, format: buffer.format)
-            engine.connect(meterMixer, to: mixer, format: buffer.format)
-            
-            // Install tap for metering
+            engine.connect(meterMixer, to: gate, format: buffer.format)
+
+            // Install tap for metering (before the gate so the meter animates
+            // even while the original is taking over the audio).
             let tapFormat = meterMixer.outputFormat(forBus: 0)
             if tapFormat.sampleRate > 0 {
                 meterMixer.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { [weak self] tapBuffer, _ in
@@ -1579,12 +1595,19 @@ class AudioEngine: ObservableObject {
                     }
                 }
             }
-            
+
             playerNodes.append(player)
             eqNodes.append(eq)
             meterTapNodes.append(meterMixer)
         }
-        
+
+        // Single connection from the gate down to the main mixer chain.
+        engine.connect(gate, to: mixer, format: nil)
+
+        // Apply the current master-source state (may silence the gate
+        // immediately if shouldPlayOriginal() is already true).
+        updateMasterSource()
+
         // Load EQ settings if available
         applyEQSettings()
         
@@ -2049,12 +2072,10 @@ class AudioEngine: ObservableObject {
             gain = 0
         }
 
-        // Stems are silenced when the pristine original takes over — see
-        // shouldPlayOriginal().
-        if shouldPlayOriginal() {
-            gain = 0
-        }
-
+        // Note: we intentionally keep the player's volume at the user's fader
+        // value even when the pristine original is taking over. The stem
+        // signal still flows through the meter tap so the mixer meters stay
+        // animated; stemOutputGate silences the audio downstream.
         playerNodes[index].volume = Float(gain)
     }
 
@@ -2089,11 +2110,14 @@ class AudioEngine: ObservableObject {
         return allFadersMax && !anyMuted && !anySoloed && !anyPanned
     }
 
-    /// Cross-fades between the pristine original player and the stem sum by
-    /// toggling the original's output volume. Stem volumes are handled by
-    /// updateGain(for:).
+    /// Cross-fades between the pristine original player and the stem sum.
+    /// Driving this through the shared stemOutputGate (instead of the
+    /// individual stem players' volumes) keeps the per-stem meters
+    /// animated with the real signal even while the original is audible.
     private func updateMasterSource() {
-        originalPlayerNode?.volume = shouldPlayOriginal() ? 1.0 : 0.0
+        let playOriginal = shouldPlayOriginal()
+        originalPlayerNode?.volume = playOriginal ? 1.0 : 0.0
+        stemOutputGate?.outputVolume = playOriginal ? 0.0 : 1.0
     }
     
     private func updateAllPans() {
@@ -2376,7 +2400,12 @@ class AudioEngine: ObservableObject {
             for node in eqNodes {
                 engine.detach(node)
             }
-            
+
+            // Clean up stem output gate
+            if let gate = stemOutputGate {
+                engine.detach(gate)
+            }
+
             // Clean up EQ meter node
             if let eqMeter = eqMeterNode {
                 eqMeter.removeTap(onBus: 0)
@@ -2397,7 +2426,8 @@ class AudioEngine: ObservableObject {
         meterTapNodes.removeAll()
         peakLevels.removeAll()
         audioBuffers.removeAll()
-        
+        stemOutputGate = nil
+
         // Clear original audio
         originalAudioBuffer = nil
         originalPlayerNode = nil

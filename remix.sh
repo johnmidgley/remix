@@ -1,14 +1,17 @@
 #!/bin/bash
 set -e
 
-# remix.sh — fast dev-iteration runner.
+# remix.sh — dev-iteration runner.
 #
 # Ensures the Remix.app bundle is up to date and launches the binary directly
 # so NSLog/print output streams to the terminal (Ctrl-C kills it).
 #
 # First run (or when the bundle is missing Python / resources) delegates to
-# build-macos-app.sh. Subsequent runs do an incremental Rust build and a
-# debug-mode Swift recompile only when sources have changed.
+# build-macos-app.sh. Subsequent runs do an incremental Rust build and an
+# optimized Swift recompile only when sources have changed. We match the
+# release build's -O / -whole-module-optimization so runtime performance
+# matches what you'd get from build-macos-app.sh — debug builds were causing
+# visible UI spinners during interaction.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -55,7 +58,7 @@ for src in "${SWIFT_SOURCES[@]}" "$HEADER_PATH" "$RUST_LIB"; do
 done
 
 if [ "$swift_rebuild" -eq 1 ]; then
-    echo "Swift sources changed — recompiling (debug, -Onone)..."
+    echo "Swift sources changed — recompiling (optimized)..."
 
     SDK=$(xcrun --show-sdk-path --sdk macosx)
 
@@ -66,7 +69,8 @@ if [ "$swift_rebuild" -eq 1 ]; then
 
     set +e
     swiftc \
-        -Onone \
+        -O \
+        -whole-module-optimization \
         -target ${ARCH}-apple-macosx13.0 \
         -sdk "$SDK" \
         -import-objc-header "$HEADER_PATH" \
