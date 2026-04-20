@@ -4,27 +4,40 @@ import AppKit
 struct ContentView: View {
     @EnvironmentObject var audioEngine: AudioEngine
     @FocusState private var focusedField: FocusField?
-    
+
+    // Persisted width (source of truth across launches).
+    @AppStorage("fileBrowserWidth") private var storedFileBrowserWidth: Double = 220
+    // Live width used during a drag — avoids writing UserDefaults on every
+    // drag frame, which was causing visible stutter.
+    @State private var fileBrowserWidth: Double = 220
+
+    private let minFileBrowserWidth: Double = 160
+    private let maxFileBrowserWidth: Double = 600
+
     enum FocusField: Hashable {
         case timeline
         case mixer
         case transport
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Toolbar
             ToolbarView()
-            
+
             // Main content with optional file browser
             HStack(alignment: .top, spacing: 0) {
                 // File browser sidebar
                 if audioEngine.showFileBrowser {
                     FileBrowserView()
-                        .frame(width: 220)
-                    
-                    Divider()
-                        .background(Color(hex: "333333"))
+                        .frame(width: fileBrowserWidth)
+
+                    ResizableDivider(
+                        width: $fileBrowserWidth,
+                        minWidth: minFileBrowserWidth,
+                        maxWidth: maxFileBrowserWidth,
+                        onEnd: { storedFileBrowserWidth = fileBrowserWidth }
+                    )
                 }
                 
                 // Main content
@@ -51,6 +64,61 @@ struct ContentView: View {
             }
         }
         .background(KeyEventHandlingView(audioEngine: audioEngine))
+        .onAppear {
+            // Pick up the persisted width once SwiftUI has injected @AppStorage.
+            fileBrowserWidth = max(minFileBrowserWidth, min(maxFileBrowserWidth, storedFileBrowserWidth))
+        }
+    }
+}
+
+// MARK: - Resizable Divider
+/// A 1px visible divider with a wider invisible hit area, used to resize the
+/// adjacent pane by dragging horizontally. The cursor switches to the
+/// east-west resize cursor while hovering.
+///
+/// The drag uses global coordinates so the translation stays stable as the
+/// divider itself moves — without this the cursor drifts off the handle.
+/// `onEnd` is called once when the drag completes; callers typically use it
+/// to persist the final width (avoid persisting every frame).
+struct ResizableDivider: View {
+    @Binding var width: Double
+    let minWidth: Double
+    let maxWidth: Double
+    var onEnd: (() -> Void)? = nil
+
+    @State private var dragStartWidth: Double? = nil
+
+    var body: some View {
+        Rectangle()
+            .fill(Color(hex: "333333"))
+            .frame(width: 1)
+            .overlay(
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: 8)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                            .onChanged { value in
+                                if dragStartWidth == nil {
+                                    dragStartWidth = width
+                                }
+                                let proposed = (dragStartWidth ?? width) + Double(value.translation.width)
+                                width = Swift.min(Swift.max(proposed, minWidth), maxWidth)
+                            }
+                            .onEnded { _ in
+                                dragStartWidth = nil
+                                onEnd?()
+                            }
+                    )
+            )
     }
 }
 
