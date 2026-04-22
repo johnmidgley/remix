@@ -122,6 +122,7 @@ SWIFT_SOURCES=(
     "macos-app/Remix/Sources/AudioEngine.swift"
     "macos-app/Remix/Sources/ContentView.swift"
     "macos-app/Remix/Sources/LicensesView.swift"
+    "macos-app/Remix/Sources/LoudnessAnalyzer.swift"
     "macos-app/Remix/Sources/PreferencesView.swift"
 )
 

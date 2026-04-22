@@ -1,5 +1,10 @@
 import SwiftUI
 
+private func stemNormalizeMenuTitle(isNormalizing: Bool, applied: Bool) -> String {
+    if isNormalizing { return "Normalizing Stems…" }
+    return applied ? "✓ Normalize Stem Levels" : "Normalize Stem Levels"
+}
+
 @main
 struct RemixApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -87,6 +92,17 @@ struct RemixApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .option])
                 .disabled(!audioEngine.hasSession)
+
+                Divider()
+
+                Button(stemNormalizeMenuTitle(
+                    isNormalizing: audioEngine.isNormalizingStems,
+                    applied: audioEngine.stemsNormalized
+                )) {
+                    audioEngine.toggleStemNormalize()
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(!audioEngine.hasSession || audioEngine.isNormalizingStems)
             }
             
             // Preferences menu (standard location in app menu on macOS)
@@ -200,6 +216,7 @@ struct HelpView: View {
                             shortcutRow("Toggle Loop", "⌘L")
                             shortcutRow("Reset Faders", "⌘R")
                             shortcutRow("Reset All Settings", "⌥⌘R")
+                            shortcutRow("Normalize Stem Levels", "⇧⌘N")
                             shortcutRow("Show Help", "⌘?")
                         }
                     }

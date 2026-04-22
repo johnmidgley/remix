@@ -1604,18 +1604,24 @@ struct MixerView: View {
                         }
                     }
                     .padding(.horizontal, 20)
-                    .padding(.top, 36)
+                    .padding(.top, 64)
                     .frame(minWidth: geometry.size.width, alignment: .center)
+                    .opacity(audioEngine.originalEnabled ? 0.4 : 1.0)
+                    .disabled(audioEngine.originalEnabled)
                 }
                 .overlay(alignment: .topTrailing) {
                     if audioEngine.componentCount > 0 {
-                        Button("Reset") {
-                            audioEngine.resetAllFaders()
+                        HStack(spacing: 8) {
+                            OriginalToggleButton()
+                            Button("Reset") {
+                                audioEngine.resetAllFaders()
+                            }
+                            .buttonStyle(SecondaryToolbarButtonStyle())
+                            .help("Reset all sliders, pans, solos, and mutes to defaults")
+                            .disabled(audioEngine.originalEnabled)
                         }
-                        .buttonStyle(SecondaryToolbarButtonStyle())
-                        .help("Reset all sliders, pans, solos, and mutes to defaults")
-                        .padding(.top, 8)
-                        .padding(.trailing, 12)
+                        .padding(.top, 16)
+                        .padding(.trailing, 20)
                     }
                 }
             }
@@ -1936,7 +1942,18 @@ struct ChannelStripView: View {
                                 .stroke(Color(hex: "333333"), lineWidth: 1)
                         )
                 )
-            
+
+            // Normalize gain readout (visible only when stem normalization is active)
+            if audioEngine.stemsNormalized,
+               index < audioEngine.stemNormalizeGainsDB.count {
+                let gain = audioEngine.stemNormalizeGainsDB[index]
+                Text(String(format: "%@%.1f", gain >= 0 ? "+" : "", gain))
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundColor(Color(hex: "0a84ff"))
+                    .frame(width: 40)
+                    .help("Normalization gain for \(stemName)")
+            }
+
             // Solo/Mute
             HStack(spacing: 4) {
                 SoloMuteButton(
@@ -2434,6 +2451,44 @@ struct ToolbarButtonStyle: ButtonStyle {
                     )
             )
             .foregroundColor(.white)
+    }
+}
+
+// MARK: - Original Toggle
+struct OriginalToggleButton: View {
+    @EnvironmentObject var audioEngine: AudioEngine
+
+    var body: some View {
+        Button {
+            audioEngine.toggleOriginal()
+        } label: {
+            Text("Original")
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(
+                            audioEngine.originalEnabled
+                                ? LinearGradient(
+                                    colors: [Color(hex: "0a84ff"), Color(hex: "0866cc")],
+                                    startPoint: .top, endPoint: .bottom)
+                                : LinearGradient(
+                                    colors: [Color(hex: "4a4a4a"), Color(hex: "3a3a3a")],
+                                    startPoint: .top, endPoint: .bottom)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(
+                                    audioEngine.originalEnabled
+                                        ? Color(hex: "0a84ff")
+                                        : Color(hex: "555555"),
+                                    lineWidth: 1)
+                        )
+                )
+                .foregroundColor(audioEngine.originalEnabled ? .white : Color(hex: "cccccc"))
+        }
+        .buttonStyle(.plain)
+        .help("Play the pristine original audio regardless of the mixer settings")
     }
 }
 

@@ -301,6 +301,10 @@ class AudioEngine: ObservableObject {
     }
     @Published var playbackRate: Float = 1.0
     @Published var pitch: Float = 0.0  // Pitch shift in cents (-200 to +200)
+    @Published var isNormalizingStems: Bool = false
+    @Published private(set) var stemsNormalized: Bool = false
+    @Published var originalEnabled: Bool = false
+    @Published private(set) var stemNormalizeGainsDB: [Float] = []
     @Published var waveformSamples: [Float] = []
     @Published var selectionStart: Double = 0
     @Published var selectionEnd: Double = 0
@@ -355,6 +359,7 @@ class AudioEngine: ObservableObject {
     private var pendingPanValues: [String: Double] = [:]
     private var pendingMuteStates: [String: Bool] = [:]
     private var pendingSoloStates: [String: Bool] = [:]
+    private var pendingStemNormalizeGains: [String: Float] = [:]
     // Playhead/selection are also loaded before duration is known, so we stash
     // them here and clamp-apply once the audio is wired up.
     private var pendingPlayheadPosition: Double = 0
@@ -401,6 +406,10 @@ class AudioEngine: ObservableObject {
         var playheadPosition: Double = 0
         var selectionStart: Double = 0
         var selectionEnd: Double = 0
+        // Per-stem normalize gains keyed by display name.
+        var stemNormalizeGains: [String: Float] = [:]
+        // Whether the user has switched the mixer to play the pristine original.
+        var originalEnabled: Bool = false
 
         init(
             playbackRate: Float = 1.0,
@@ -413,7 +422,9 @@ class AudioEngine: ObservableObject {
             soloStates: [String: Bool] = [:],
             playheadPosition: Double = 0,
             selectionStart: Double = 0,
-            selectionEnd: Double = 0
+            selectionEnd: Double = 0,
+            stemNormalizeGains: [String: Float] = [:],
+            originalEnabled: Bool = false
         ) {
             self.playbackRate = playbackRate
             self.pitch = pitch
@@ -426,6 +437,8 @@ class AudioEngine: ObservableObject {
             self.playheadPosition = playheadPosition
             self.selectionStart = selectionStart
             self.selectionEnd = selectionEnd
+            self.stemNormalizeGains = stemNormalizeGains
+            self.originalEnabled = originalEnabled
         }
 
         // Custom decoder: every field is decodeIfPresent so saved blobs from
@@ -444,6 +457,8 @@ class AudioEngine: ObservableObject {
             playheadPosition = try c.decodeIfPresent(Double.self, forKey: .playheadPosition) ?? 0
             selectionStart = try c.decodeIfPresent(Double.self, forKey: .selectionStart) ?? 0
             selectionEnd = try c.decodeIfPresent(Double.self, forKey: .selectionEnd) ?? 0
+            stemNormalizeGains = try c.decodeIfPresent([String: Float].self, forKey: .stemNormalizeGains) ?? [:]
+            originalEnabled = try c.decodeIfPresent(Bool.self, forKey: .originalEnabled) ?? false
         }
     }
     
@@ -526,11 +541,13 @@ class AudioEngine: ObservableObject {
         var savedPans: [String: Double] = [:]
         var savedMutes: [String: Bool] = [:]
         var savedSolos: [String: Bool] = [:]
+        var savedStemNorm: [String: Float] = [:]
         for (i, name) in stemNames.enumerated() {
             if i < faderValues.count { savedFaders[name] = faderValues[i] }
             if i < panValues.count { savedPans[name] = panValues[i] }
             if i < muteStates.count { savedMutes[name] = muteStates[i] }
             if i < soloStates.count { savedSolos[name] = soloStates[i] }
+            if i < stemNormalizeGainsDB.count { savedStemNorm[name] = stemNormalizeGainsDB[i] }
         }
 
         let settings = SongSettings(
@@ -546,7 +563,9 @@ class AudioEngine: ObservableObject {
             // display-throttled currentTime); otherwise currentTime.
             playheadPosition: isPlaying ? currentTime : max(pauseTime, currentTime),
             selectionStart: selectionStart,
-            selectionEnd: selectionEnd
+            selectionEnd: selectionEnd,
+            stemNormalizeGains: savedStemNorm,
+            originalEnabled: originalEnabled
         )
 
         if let encoded = try? JSONEncoder().encode(settings) {
@@ -571,12 +590,14 @@ class AudioEngine: ObservableObject {
             pendingPanValues = settings.panValues
             pendingMuteStates = settings.muteStates
             pendingSoloStates = settings.soloStates
+            pendingStemNormalizeGains = settings.stemNormalizeGains
             pendingPlayheadPosition = settings.playheadPosition
             pendingSelectionStart = settings.selectionStart
             pendingSelectionEnd = settings.selectionEnd
             timePitchNode?.rate = settings.playbackRate
             timePitchNode?.pitch = settings.pitch
             applyEQSettings()
+            originalEnabled = settings.originalEnabled
         } else {
             resetSongSettingsToDefaults()
         }
@@ -591,11 +612,13 @@ class AudioEngine: ObservableObject {
         pendingPanValues = [:]
         pendingMuteStates = [:]
         pendingSoloStates = [:]
+        pendingStemNormalizeGains = [:]
         pendingPlayheadPosition = 0
         pendingSelectionStart = 0
         pendingSelectionEnd = 0
         timePitchNode?.rate = 1.0
         timePitchNode?.pitch = 0.0
+        originalEnabled = false
     }
 
     /// Applies the pending playhead/selection values clamped to the current
@@ -1610,7 +1633,8 @@ class AudioEngine: ObservableObject {
 
         // Load EQ settings if available
         applyEQSettings()
-        
+        applyPendingStemNormalizeGains()
+
         do {
             try engine.start()
         } catch {
@@ -1912,6 +1936,7 @@ class AudioEngine: ObservableObject {
             soloStates[i] = false
             muteStates[i] = false
         }
+        clearStemNormalizeGains()
         updateAllGains()
         updateAllPans()
     }
@@ -1924,6 +1949,71 @@ class AudioEngine: ObservableObject {
         for stemName in stemNames {
             resetEQ(target: stemName)
         }
+    }
+
+    /// Toggles stem normalization. If currently applied, clears it; otherwise
+    /// triggers analysis + gain application.
+    func toggleStemNormalize() {
+        if stemsNormalized {
+            clearStemNormalizeGains()
+        } else {
+            normalizeStemLevels()
+        }
+    }
+
+    /// Measures integrated LUFS per stem and applies per-stem gain (via each
+    /// stem's EQ globalGain) to bring them toward the median, capped at ±12 dB.
+    /// Runs asynchronously; sets `isNormalizingStems` while in flight.
+    func normalizeStemLevels() {
+        guard !audioBuffers.isEmpty, !isNormalizingStems else { return }
+        let buffers = audioBuffers
+        isNormalizingStems = true
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let perStemLUFS: [Float?] = buffers.map {
+                LoudnessAnalyzer.analyze(buffer: $0)?.integratedLUFS
+            }
+            let valid = perStemLUFS.compactMap { $0 }.sorted()
+
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.isNormalizingStems = false
+                guard !valid.isEmpty else { return }
+                let median = valid[valid.count / 2]
+                let gains: [Float] = perStemLUFS.map { lufs in
+                    guard let l = lufs else { return 0 }
+                    return max(-12, min(12, median - l))
+                }
+                self.stemNormalizeGainsDB = gains
+                self.applyStemNormalizeGains()
+            }
+        }
+    }
+
+    private func applyStemNormalizeGains() {
+        for (i, gainDB) in stemNormalizeGainsDB.enumerated() where i < eqNodes.count {
+            eqNodes[i].globalGain = gainDB
+        }
+        stemsNormalized = stemNormalizeGainsDB.contains { abs($0) > 0.01 }
+        updateMasterSource()
+    }
+
+    /// Aligns the pending (by-name) stem normalize gains to the current
+    /// stemNames order and applies them. No-op if no pending gains.
+    private func applyPendingStemNormalizeGains() {
+        guard !pendingStemNormalizeGains.isEmpty else { return }
+        stemNormalizeGainsDB = stemNames.map { pendingStemNormalizeGains[$0] ?? 0 }
+        applyStemNormalizeGains()
+        pendingStemNormalizeGains = [:]
+    }
+
+    private func clearStemNormalizeGains() {
+        for i in 0..<eqNodes.count {
+            eqNodes[i].globalGain = 0
+        }
+        stemNormalizeGainsDB = Array(repeating: 0, count: stemNormalizeGainsDB.count)
+        stemsNormalized = false
+        updateMasterSource()
     }
 
     func zeroAllFaders() {
@@ -2104,7 +2194,7 @@ class AudioEngine: ObservableObject {
     /// mixer — in that case we play the pristine original file instead of
     /// summing the demucs-separated stems (which introduces small artifacts).
     private func shouldPlayOriginal() -> Bool {
-        guard hasSession, !faderValues.isEmpty else { return false }
+        guard hasSession, originalEnabled else { return false }
         // The original buffer may not be loaded (e.g. cached-by-key sessions
         // where the source file is unavailable). Fall back to summed stems.
         guard originalAudioBuffer != nil, let origPlayer = originalPlayerNode else { return false }
@@ -2112,12 +2202,12 @@ class AudioEngine: ObservableObject {
         // otherwise silencing the stems would produce silence. This handles the
         // case where the original loads asynchronously after play() was called.
         if isPlaying && !origPlayer.isPlaying { return false }
-        let epsilon = 0.001
-        let allFadersMax = faderValues.allSatisfy { $0 >= 1.0 - epsilon }
-        let anyMuted = muteStates.contains(true)
-        let anySoloed = soloStates.contains(true)
-        let anyPanned = panValues.contains { abs($0) > epsilon }
-        return allFadersMax && !anyMuted && !anySoloed && !anyPanned
+        return true
+    }
+
+    func toggleOriginal() {
+        originalEnabled.toggle()
+        updateMasterSource()
     }
 
     /// Cross-fades between the pristine original player and the stem sum.
@@ -2442,7 +2532,10 @@ class AudioEngine: ObservableObject {
         originalAudioBuffer = nil
         originalPlayerNode = nil
         originalMeterNode = nil
-        
+
+        stemNormalizeGainsDB = []
+        stemsNormalized = false
+
         // Clean up temp directory
         if let tempDir = tempDirectory {
             try? FileManager.default.removeItem(at: tempDir)
