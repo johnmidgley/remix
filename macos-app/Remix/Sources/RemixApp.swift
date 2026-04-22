@@ -81,6 +81,12 @@ struct RemixApp: App {
                 }
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(!audioEngine.hasSession)
+
+                Button("Reset All Settings") {
+                    audioEngine.resetAllSettings()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+                .disabled(!audioEngine.hasSession)
             }
             
             // Preferences menu (standard location in app menu on macOS)
@@ -193,6 +199,7 @@ struct HelpView: View {
                             shortcutRow("Stop", "Return")
                             shortcutRow("Toggle Loop", "⌘L")
                             shortcutRow("Reset Faders", "⌘R")
+                            shortcutRow("Reset All Settings", "⌥⌘R")
                             shortcutRow("Show Help", "⌘?")
                         }
                     }

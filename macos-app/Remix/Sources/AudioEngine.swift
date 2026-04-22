@@ -1916,6 +1916,16 @@ class AudioEngine: ObservableObject {
         updateAllPans()
     }
 
+    func resetAllSettings() {
+        resetAllFaders()
+        setPlaybackRate(1.0)
+        setPitch(0.0)
+        resetEQ(target: "Master")
+        for stemName in stemNames {
+            resetEQ(target: stemName)
+        }
+    }
+
     func zeroAllFaders() {
         for i in 0..<componentCount {
             faderValues[i] = 0.0
