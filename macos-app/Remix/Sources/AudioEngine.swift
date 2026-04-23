@@ -2193,7 +2193,10 @@ class AudioEngine: ObservableObject {
     func setSelection(start: Double, end: Double) {
         let clampedStart = max(0, min(duration, start))
         let clampedEnd = max(0, min(duration, end))
-        if clampedEnd <= clampedStart {
+        // Ignore selections shorter than 1 second — they're almost always
+        // accidental clicks or tiny drags and looping a sub-second region is
+        // rarely useful.
+        if clampedEnd - clampedStart < 1.0 {
             selectionStart = 0
             selectionEnd = 0
             return
