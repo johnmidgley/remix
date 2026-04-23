@@ -9,9 +9,12 @@ private func stemNormalizeMenuTitle(isNormalizing: Bool, applied: Bool) -> Strin
 struct RemixApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var audioEngine = AudioEngine()
+    @StateObject private var presetStore = MixerPresetStore()
     @State private var showingHelp = false
     @State private var showingAbout = false
     @State private var showingPreferences = false
+    @State private var showingSavePreset = false
+    @State private var showingManagePresets = false
     
     init() {
         // This will be called after @NSApplicationDelegateAdaptor initializes appDelegate
@@ -21,6 +24,7 @@ struct RemixApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(audioEngine)
+                .environmentObject(presetStore)
                 .frame(minWidth: 800, minHeight: 500)
                 .background(WindowAccessor(audioEngine: audioEngine))
                 .sheet(isPresented: $showingHelp) {
@@ -31,6 +35,15 @@ struct RemixApp: App {
                 }
                 .sheet(isPresented: $showingPreferences) {
                     PreferencesView()
+                }
+                .sheet(isPresented: $showingSavePreset) {
+                    SavePresetSheet(isPresented: $showingSavePreset)
+                        .environmentObject(audioEngine)
+                        .environmentObject(presetStore)
+                }
+                .sheet(isPresented: $showingManagePresets) {
+                    ManagePresetsSheet(isPresented: $showingManagePresets)
+                        .environmentObject(presetStore)
                 }
                 .onAppear {
                     // Connect the audio engine to the app delegate
@@ -113,6 +126,35 @@ struct RemixApp: App {
                 .keyboardShortcut(",", modifiers: .command)
             }
             
+            CommandMenu("Mixer") {
+                Button("Save Preset…") {
+                    showingSavePreset = true
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(!audioEngine.hasSession)
+
+                Button("Manage Presets…") {
+                    showingManagePresets = true
+                }
+
+                Divider()
+
+                if presetStore.sortedNames.isEmpty {
+                    Button("No Presets Saved") {}.disabled(true)
+                } else {
+                    Section("Load Preset") {
+                        ForEach(presetStore.sortedNames, id: \.self) { name in
+                            Button(name) {
+                                if let preset = presetStore.presets[name] {
+                                    audioEngine.applyMixerPreset(preset)
+                                }
+                            }
+                            .disabled(!audioEngine.hasSession)
+                        }
+                    }
+                }
+            }
+
             CommandMenu("Transport") {
                 Button(audioEngine.isPlaying ? "Pause" : "Play") {
                     audioEngine.togglePlayback()
@@ -375,5 +417,134 @@ struct WindowAccessor: NSViewRepresentable {
         if let window = nsView.window {
             window.tabbingMode = .disallowed
         }
+    }
+}
+
+// MARK: - Preset Sheets
+
+struct SavePresetSheet: View {
+    @EnvironmentObject var audioEngine: AudioEngine
+    @EnvironmentObject var presetStore: MixerPresetStore
+    @Binding var isPresented: Bool
+    @State private var name: String = ""
+    @FocusState private var isNameFocused: Bool
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespaces)
+    }
+
+    private var willOverwrite: Bool {
+        !trimmedName.isEmpty && presetStore.presets[trimmedName] != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Save Mixer Preset")
+                .font(.headline)
+
+            TextField("Preset name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .focused($isNameFocused)
+                .onSubmit(save)
+
+            if willOverwrite {
+                Text("A preset named \"\(trimmedName)\" already exists — it will be replaced.")
+                    .font(.caption)
+                    .foregroundColor(Color(hex: "ff9f0a"))
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Button(willOverwrite ? "Replace" : "Save", action: save)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(trimmedName.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .onAppear { isNameFocused = true }
+    }
+
+    private func save() {
+        guard !trimmedName.isEmpty else { return }
+        presetStore.save(audioEngine.currentMixerPreset(), name: trimmedName)
+        isPresented = false
+    }
+}
+
+struct ManagePresetsSheet: View {
+    @EnvironmentObject var presetStore: MixerPresetStore
+    @Binding var isPresented: Bool
+    @State private var renaming: String? = nil
+    @State private var renameText: String = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Manage Presets").font(.headline)
+                Spacer()
+                Button(action: { isPresented = false }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(.gray)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding()
+
+            Divider()
+
+            if presetStore.sortedNames.isEmpty {
+                VStack {
+                    Spacer()
+                    Text("No saved presets")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(presetStore.sortedNames, id: \.self) { name in
+                            HStack {
+                                if renaming == name {
+                                    TextField("Name", text: $renameText, onCommit: {
+                                        commitRename(from: name)
+                                    })
+                                    .textFieldStyle(.roundedBorder)
+                                    Button("Save") { commitRename(from: name) }
+                                    Button("Cancel") { renaming = nil }
+                                } else {
+                                    Text(name)
+                                    Spacer()
+                                    Button("Rename") {
+                                        renameText = name
+                                        renaming = name
+                                    }
+                                    Button("Delete") {
+                                        presetStore.delete(name: name)
+                                    }
+                                    .foregroundColor(.red)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+        .frame(width: 440, height: 320)
+    }
+
+    private func commitRename(from old: String) {
+        let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty {
+            presetStore.rename(from: old, to: trimmed)
+        }
+        renaming = nil
     }
 }

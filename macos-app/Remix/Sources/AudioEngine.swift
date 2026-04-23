@@ -301,6 +301,7 @@ class AudioEngine: ObservableObject {
     }
     @Published var playbackRate: Float = 1.0
     @Published var pitch: Float = 0.0  // Pitch shift in cents (-200 to +200)
+    @Published var masterFaderValue: Double = 1.0  // Master gain applied to stem path only; stored as linear amp (0..~1.995 with +6 dB ceiling)
     @Published var isNormalizingStems: Bool = false
     @Published private(set) var stemsNormalized: Bool = false
     @Published var originalEnabled: Bool = false
@@ -410,6 +411,8 @@ class AudioEngine: ObservableObject {
         var stemNormalizeGains: [String: Float] = [:]
         // Whether the user has switched the mixer to play the pristine original.
         var originalEnabled: Bool = false
+        // Master fader (stem-path only). Stored as linear amp, default 1.0 = 0 dB.
+        var masterFaderValue: Double = 1.0
 
         init(
             playbackRate: Float = 1.0,
@@ -424,7 +427,8 @@ class AudioEngine: ObservableObject {
             selectionStart: Double = 0,
             selectionEnd: Double = 0,
             stemNormalizeGains: [String: Float] = [:],
-            originalEnabled: Bool = false
+            originalEnabled: Bool = false,
+            masterFaderValue: Double = 1.0
         ) {
             self.playbackRate = playbackRate
             self.pitch = pitch
@@ -439,6 +443,7 @@ class AudioEngine: ObservableObject {
             self.selectionEnd = selectionEnd
             self.stemNormalizeGains = stemNormalizeGains
             self.originalEnabled = originalEnabled
+            self.masterFaderValue = masterFaderValue
         }
 
         // Custom decoder: every field is decodeIfPresent so saved blobs from
@@ -1911,6 +1916,11 @@ class AudioEngine: ObservableObject {
         updateAllGains()
     }
 
+    func setMasterFaderValue(_ value: Double) {
+        masterFaderValue = max(0, min(faderMaxAmp, value))
+        updateAllGains()
+    }
+
     func setPanValue(_ value: Double, for index: Int) {
         guard index < panValues.count else { return }
         panValues[index] = max(-1.0, min(1.0, value))
@@ -1950,6 +1960,41 @@ class AudioEngine: ObservableObject {
         for stemName in stemNames {
             resetEQ(target: stemName)
         }
+    }
+
+    // MARK: - Mixer Presets
+
+    /// Snapshots the current per-stem mixer state (faders, pans, solo/mute,
+    /// EQ including master, stem normalize gains) into a reusable preset.
+    func currentMixerPreset() -> MixerPreset {
+        var preset = MixerPreset()
+        for (i, name) in stemNames.enumerated() {
+            if i < faderValues.count { preset.faderValues[name] = faderValues[i] }
+            if i < panValues.count { preset.panValues[name] = panValues[i] }
+            if i < muteStates.count { preset.muteStates[name] = muteStates[i] }
+            if i < soloStates.count { preset.soloStates[name] = soloStates[i] }
+            if i < stemNormalizeGainsDB.count { preset.stemNormalizeGains[name] = stemNormalizeGainsDB[i] }
+        }
+        preset.eqSettings = eqSettings
+        return preset
+    }
+
+    /// Overwrites current mixer state with the preset. Stems missing from the
+    /// preset get sensible defaults (unity / centered / off / 0 dB).
+    func applyMixerPreset(_ preset: MixerPreset) {
+        for (i, name) in stemNames.enumerated() {
+            if i < faderValues.count { faderValues[i] = preset.faderValues[name] ?? 1.0 }
+            if i < panValues.count { panValues[i] = preset.panValues[name] ?? 0.0 }
+            if i < muteStates.count { muteStates[i] = preset.muteStates[name] ?? false }
+            if i < soloStates.count { soloStates[i] = preset.soloStates[name] ?? false }
+        }
+
+        eqSettings = preset.eqSettings
+        applyEQSettings()
+
+        stemNormalizeGainsDB = stemNames.map { preset.stemNormalizeGains[$0] ?? 0 }
+        applyStemNormalizeGains()  // calls updateAllGains, which also updates the master source
+        updateAllPans()
     }
 
     /// Toggles stem normalization. If currently applied, clears it; otherwise
@@ -2175,8 +2220,10 @@ class AudioEngine: ObservableObject {
 
         let boostDB: Float = amp > 1.0 ? 20 * log10f(Float(amp)) : 0
         let normalizeDB: Float = index < stemNormalizeGainsDB.count ? stemNormalizeGainsDB[index] : 0
+        let masterDB: Float = masterFaderValue > 0 ? 20 * log10f(Float(masterFaderValue)) : -96
         if index < eqNodes.count {
-            eqNodes[index].globalGain = boostDB + normalizeDB
+            // Clamp to AVAudioUnitEQ.globalGain's valid range (-96 to +24 dB).
+            eqNodes[index].globalGain = max(-96, min(24, boostDB + normalizeDB + masterDB))
         }
     }
 
