@@ -464,6 +464,7 @@ class AudioEngine: ObservableObject {
             selectionEnd = try c.decodeIfPresent(Double.self, forKey: .selectionEnd) ?? 0
             stemNormalizeGains = try c.decodeIfPresent([String: Float].self, forKey: .stemNormalizeGains) ?? [:]
             originalEnabled = try c.decodeIfPresent(Bool.self, forKey: .originalEnabled) ?? false
+            masterFaderValue = try c.decodeIfPresent(Double.self, forKey: .masterFaderValue) ?? 1.0
         }
     }
     
@@ -570,7 +571,8 @@ class AudioEngine: ObservableObject {
             selectionStart: selectionStart,
             selectionEnd: selectionEnd,
             stemNormalizeGains: savedStemNorm,
-            originalEnabled: originalEnabled
+            originalEnabled: originalEnabled,
+            masterFaderValue: masterFaderValue
         )
 
         if let encoded = try? JSONEncoder().encode(settings) {
@@ -603,6 +605,7 @@ class AudioEngine: ObservableObject {
             timePitchNode?.pitch = settings.pitch
             applyEQSettings()
             originalEnabled = settings.originalEnabled
+            masterFaderValue = settings.masterFaderValue
         } else {
             resetSongSettingsToDefaults()
         }
@@ -624,6 +627,7 @@ class AudioEngine: ObservableObject {
         timePitchNode?.rate = 1.0
         timePitchNode?.pitch = 0.0
         originalEnabled = false
+        masterFaderValue = 1.0
     }
 
     /// Applies the pending playhead/selection values clamped to the current
@@ -1917,7 +1921,7 @@ class AudioEngine: ObservableObject {
     }
 
     func setMasterFaderValue(_ value: Double) {
-        masterFaderValue = max(0, min(faderMaxAmp, value))
+        masterFaderValue = max(0, min(faderMaxAmp(maxBoostDB: faderMasterMaxBoostDB), value))
         updateAllGains()
     }
 
@@ -1947,6 +1951,7 @@ class AudioEngine: ObservableObject {
             soloStates[i] = false
             muteStates[i] = false
         }
+        masterFaderValue = 1.0
         clearStemNormalizeGains()
         updateAllGains()
         updateAllPans()

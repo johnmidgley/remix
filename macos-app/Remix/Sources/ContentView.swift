@@ -1601,6 +1601,8 @@ struct MixerView: View {
                         // The last channel (Other)
                         if audioEngine.componentCount > 0 {
                             ChannelStripView(index: audioEngine.componentCount - 1)
+                            MasterChannelView()
+                                .padding(.leading, 8)
                         }
                     }
                     .padding(.horizontal, 20)
@@ -2240,39 +2242,44 @@ struct PanKnobView: View {
 
 // MARK: - Fader
 // DAW-style taper: unity (0 dB / amp = 1.0) sits at 75% of fader travel. Above
-// unity the top 25% gives up to +6 dB of boost; below unity the bottom 75%
-// covers 0 dB down to -60 dB (linear in dB) with a hard zero at the very
+// unity the top 25% gives up to maxBoostDB of boost; below unity the bottom
+// 75% covers 0 dB down to -60 dB (linear in dB) with a hard zero at the very
 // bottom for a true mute.
 private let faderUnityPosition: Double = 0.75
-private let faderMaxBoostDB: Double = 6.0
 private let faderMinTaperDB: Double = -60.0
-let faderMaxAmp: Double = 1.9952623149688797  // 10^(6/20)
+let faderStemMaxBoostDB: Double = 6.0
+let faderMasterMaxBoostDB: Double = 12.0
 
-func faderAmpFromPosition(_ p: Double) -> Double {
+func faderMaxAmp(maxBoostDB: Double) -> Double {
+    pow(10, maxBoostDB / 20)
+}
+
+func faderAmpFromPosition(_ p: Double, maxBoostDB: Double = faderStemMaxBoostDB) -> Double {
     let clamped = max(0, min(1, p))
     if clamped <= 0 { return 0 }
     let db: Double
     if clamped <= faderUnityPosition {
         db = faderMinTaperDB + (clamped / faderUnityPosition) * (0 - faderMinTaperDB)
     } else {
-        db = ((clamped - faderUnityPosition) / (1 - faderUnityPosition)) * faderMaxBoostDB
+        db = ((clamped - faderUnityPosition) / (1 - faderUnityPosition)) * maxBoostDB
     }
     return pow(10, db / 20)
 }
 
-func faderPositionFromAmp(_ a: Double) -> Double {
+func faderPositionFromAmp(_ a: Double, maxBoostDB: Double = faderStemMaxBoostDB) -> Double {
     if a <= 0 { return 0 }
     let db = 20 * log10(a)
     if db <= 0 {
         return max(0, faderUnityPosition * (1 + db / abs(faderMinTaperDB)))
     } else {
-        return min(1, faderUnityPosition + (db / faderMaxBoostDB) * (1 - faderUnityPosition))
+        return min(1, faderUnityPosition + (db / maxBoostDB) * (1 - faderUnityPosition))
     }
 }
 
 struct FaderView: View {
     @Binding var value: Double
     var stemName: String = "Track"
+    var maxBoostDB: Double = faderStemMaxBoostDB
 
     private var dbValue: String {
         if value == 0 { return "-∞ dB" }
@@ -2283,7 +2290,7 @@ struct FaderView: View {
     var body: some View {
         GeometryReader { geometry in
             let travel = geometry.size.height - 24
-            let position = faderPositionFromAmp(value)
+            let position = faderPositionFromAmp(value, maxBoostDB: maxBoostDB)
             let unityY = (1 - faderUnityPosition) * travel + 12
 
             ZStack {
@@ -2335,7 +2342,7 @@ struct FaderView: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
                         let p = 1 - (gesture.location.y / geometry.size.height)
-                        value = faderAmpFromPosition(p)
+                        value = faderAmpFromPosition(p, maxBoostDB: maxBoostDB)
                     }
             )
             .onTapGesture(count: 2) {
@@ -2347,13 +2354,13 @@ struct FaderView: View {
         .accessibilityValue(dbValue)
         .accessibilityHint("Adjust the volume level for this track. Double-click to reset to unity.")
         .accessibilityAdjustableAction { direction in
-            let currentPosition = faderPositionFromAmp(value)
+            let currentPosition = faderPositionFromAmp(value, maxBoostDB: maxBoostDB)
             let step = 0.05
             switch direction {
             case .increment:
-                value = faderAmpFromPosition(min(1.0, currentPosition + step))
+                value = faderAmpFromPosition(min(1.0, currentPosition + step), maxBoostDB: maxBoostDB)
             case .decrement:
-                value = faderAmpFromPosition(max(0.0, currentPosition - step))
+                value = faderAmpFromPosition(max(0.0, currentPosition - step), maxBoostDB: maxBoostDB)
             @unknown default:
                 break
             }
@@ -2408,51 +2415,61 @@ struct SoloMuteButton: View {
 }
 
 // MARK: - Master Channel
+// Applies to the stem path only — the Original bypass path is unaffected, so
+// you can match your mix's level to the original by A/B toggling "Original".
 struct MasterChannelView: View {
     @EnvironmentObject var audioEngine: AudioEngine
-    
+
+    private func formatDB(_ amp: Double) -> String {
+        if amp == 0 { return "-∞" }
+        return String(format: "%.1f", 20 * log10(amp))
+    }
+
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             Text("MASTER")
-                .font(.system(size: 10, weight: .bold))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundColor(Color(hex: "ff9f0a"))
-                .padding(.top, 8)
-            
-            Spacer()
-            
-            // Master meter (sum of all)
-            HStack(spacing: 2) {
-                MeterView(level: masterLevel)
-                MeterView(level: masterLevel)
-            }
-            
-            Text("0.0")
+
+            FaderView(
+                value: Binding(
+                    get: { audioEngine.masterFaderValue },
+                    set: { audioEngine.setMasterFaderValue($0) }
+                ),
+                stemName: "Master",
+                maxBoostDB: faderMasterMaxBoostDB
+            )
+            .help("Master gain applied to the stem mix (not the Original bypass). Double-click to reset.")
+
+            Text(formatDB(audioEngine.masterFaderValue))
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundColor(Color(hex: "888888"))
-                .padding(.bottom, 12)
-            
-            Spacer()
+                .frame(width: 40)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color(hex: "111111"))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 3)
+                                .stroke(Color(hex: "333333"), lineWidth: 1)
+                        )
+                )
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    audioEngine.setMasterFaderValue(1.0)
+                }
+                .help("Double-click to reset to 0 dB")
         }
-        .frame(width: 90)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
         .background(
-            LinearGradient(
-                colors: [Color(hex: "333333"), Color(hex: "282828")],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(hex: "282828"))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(hex: "ff9f0a").opacity(0.35), lineWidth: 1)
+                )
         )
-        .overlay(
-            Rectangle()
-                .frame(width: 2)
-                .foregroundColor(Color(hex: "0a84ff")),
-            alignment: .leading
-        )
-    }
-    
-    var masterLevel: Float {
-        guard !audioEngine.meterLevels.isEmpty else { return 0 }
-        let sum = audioEngine.meterLevels.reduce(0, +)
-        return min(1.0, sum / Float(audioEngine.meterLevels.count) * 1.5)
     }
 }
 
