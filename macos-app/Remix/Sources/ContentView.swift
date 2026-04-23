@@ -1928,7 +1928,7 @@ struct ChannelStripView: View {
             )
             .help("Drag to adjust \(stemName) volume")
             
-            // dB readout
+            // dB readout (double-click to reset fader to 0 dB)
             Text(formatDB(index < audioEngine.faderValues.count ? audioEngine.faderValues[index] : 1.0))
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundColor(Color(hex: "888888"))
@@ -1942,6 +1942,11 @@ struct ChannelStripView: View {
                                 .stroke(Color(hex: "333333"), lineWidth: 1)
                         )
                 )
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    audioEngine.setFaderValue(1.0, for: index)
+                }
+                .help("Double-click to reset to 0 dB")
 
             // Normalize gain readout (visible only when stem normalization is active)
             if audioEngine.stemsNormalized,
@@ -2234,18 +2239,53 @@ struct PanKnobView: View {
 }
 
 // MARK: - Fader
+// DAW-style taper: unity (0 dB / amp = 1.0) sits at 75% of fader travel. Above
+// unity the top 25% gives up to +6 dB of boost; below unity the bottom 75%
+// covers 0 dB down to -60 dB (linear in dB) with a hard zero at the very
+// bottom for a true mute.
+private let faderUnityPosition: Double = 0.75
+private let faderMaxBoostDB: Double = 6.0
+private let faderMinTaperDB: Double = -60.0
+let faderMaxAmp: Double = 1.9952623149688797  // 10^(6/20)
+
+func faderAmpFromPosition(_ p: Double) -> Double {
+    let clamped = max(0, min(1, p))
+    if clamped <= 0 { return 0 }
+    let db: Double
+    if clamped <= faderUnityPosition {
+        db = faderMinTaperDB + (clamped / faderUnityPosition) * (0 - faderMinTaperDB)
+    } else {
+        db = ((clamped - faderUnityPosition) / (1 - faderUnityPosition)) * faderMaxBoostDB
+    }
+    return pow(10, db / 20)
+}
+
+func faderPositionFromAmp(_ a: Double) -> Double {
+    if a <= 0 { return 0 }
+    let db = 20 * log10(a)
+    if db <= 0 {
+        return max(0, faderUnityPosition * (1 + db / abs(faderMinTaperDB)))
+    } else {
+        return min(1, faderUnityPosition + (db / faderMaxBoostDB) * (1 - faderUnityPosition))
+    }
+}
+
 struct FaderView: View {
     @Binding var value: Double
     var stemName: String = "Track"
-    
+
     private var dbValue: String {
         if value == 0 { return "-∞ dB" }
         let db = 20 * log10(value)
         return String(format: "%.1f dB", db)
     }
-    
+
     var body: some View {
         GeometryReader { geometry in
+            let travel = geometry.size.height - 24
+            let position = faderPositionFromAmp(value)
+            let unityY = (1 - faderUnityPosition) * travel + 12
+
             ZStack {
                 // Track background
                 RoundedRectangle(cornerRadius: 4)
@@ -2254,17 +2294,23 @@ struct FaderView: View {
                         RoundedRectangle(cornerRadius: 4)
                             .stroke(Color(hex: "333333"), lineWidth: 1)
                     )
-                
+
                 // Center line
                 Rectangle()
                     .fill(Color(hex: "222222"))
                     .frame(width: 4)
-                
+
+                // Unity (0 dB) tick
+                Rectangle()
+                    .fill(Color(hex: "555555"))
+                    .frame(width: 24, height: 1)
+                    .position(x: geometry.size.width / 2, y: unityY)
+
                 // Thumb
                 VStack {
                     Spacer()
-                        .frame(height: (1 - CGFloat(value)) * (geometry.size.height - 24))
-                    
+                        .frame(height: (1 - CGFloat(position)) * travel)
+
                     RoundedRectangle(cornerRadius: 3)
                         .fill(
                             LinearGradient(
@@ -2279,30 +2325,35 @@ struct FaderView: View {
                                 .stroke(Color(hex: "222222"), lineWidth: 1)
                         )
                         .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-                    
+
                     Spacer()
-                        .frame(height: CGFloat(value) * (geometry.size.height - 24))
+                        .frame(height: CGFloat(position) * travel)
                 }
             }
+            .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
-                        let newValue = 1 - (gesture.location.y / geometry.size.height)
-                        value = max(0, min(1, newValue))
+                        let p = 1 - (gesture.location.y / geometry.size.height)
+                        value = faderAmpFromPosition(p)
                     }
             )
+            .onTapGesture(count: 2) {
+                value = 1.0  // reset to unity
+            }
         }
         .frame(width: 36, height: 120)
         .accessibilityLabel("\(stemName) volume fader")
         .accessibilityValue(dbValue)
-        .accessibilityHint("Adjust the volume level for this track")
+        .accessibilityHint("Adjust the volume level for this track. Double-click to reset to unity.")
         .accessibilityAdjustableAction { direction in
+            let currentPosition = faderPositionFromAmp(value)
             let step = 0.05
             switch direction {
             case .increment:
-                value = min(1.0, value + step)
+                value = faderAmpFromPosition(min(1.0, currentPosition + step))
             case .decrement:
-                value = max(0.0, value - step)
+                value = faderAmpFromPosition(max(0.0, currentPosition - step))
             @unknown default:
                 break
             }

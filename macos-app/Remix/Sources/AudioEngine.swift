@@ -1634,6 +1634,7 @@ class AudioEngine: ObservableObject {
         // Load EQ settings if available
         applyEQSettings()
         applyPendingStemNormalizeGains()
+        updateAllGains()
 
         do {
             try engine.start()
@@ -1991,11 +1992,8 @@ class AudioEngine: ObservableObject {
     }
 
     private func applyStemNormalizeGains() {
-        for (i, gainDB) in stemNormalizeGainsDB.enumerated() where i < eqNodes.count {
-            eqNodes[i].globalGain = gainDB
-        }
         stemsNormalized = stemNormalizeGainsDB.contains { abs($0) > 0.01 }
-        updateMasterSource()
+        updateAllGains()
     }
 
     /// Aligns the pending (by-name) stem normalize gains to the current
@@ -2008,12 +2006,9 @@ class AudioEngine: ObservableObject {
     }
 
     private func clearStemNormalizeGains() {
-        for i in 0..<eqNodes.count {
-            eqNodes[i].globalGain = 0
-        }
         stemNormalizeGainsDB = Array(repeating: 0, count: stemNormalizeGainsDB.count)
         stemsNormalized = false
-        updateMasterSource()
+        updateAllGains()
     }
 
     func zeroAllFaders() {
@@ -2166,17 +2161,23 @@ class AudioEngine: ObservableObject {
         guard index < playerNodes.count else { return }
 
         let hasSolo = soloStates.contains(true)
-        var gain = faderValues[index]
-
+        var amp = faderValues[index]
         if muteStates[index] || (hasSolo && !soloStates[index]) {
-            gain = 0
+            amp = 0
         }
 
-        // Note: we intentionally keep the player's volume at the user's fader
-        // value even when the pristine original is taking over. The stem
-        // signal still flows through the meter tap so the mixer meters stay
+        // AVAudioPlayerNode.volume is capped at 1.0, so boosts above unity ride
+        // on the EQ node's globalGain (in dB) downstream. Attenuation stays on
+        // the player's volume. We keep the player volume's signal flowing even
+        // while the pristine original takes over so per-stem meter taps remain
         // animated; stemOutputGate silences the audio downstream.
-        playerNodes[index].volume = Float(gain)
+        playerNodes[index].volume = Float(min(amp, 1.0))
+
+        let boostDB: Float = amp > 1.0 ? 20 * log10f(Float(amp)) : 0
+        let normalizeDB: Float = index < stemNormalizeGainsDB.count ? stemNormalizeGainsDB[index] : 0
+        if index < eqNodes.count {
+            eqNodes[index].globalGain = boostDB + normalizeDB
+        }
     }
 
     private func updatePan(for index: Int) {
