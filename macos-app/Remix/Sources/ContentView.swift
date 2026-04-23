@@ -1455,20 +1455,20 @@ struct PreAnalysisTimelineView: View {
                         let regionEndRatio = CGFloat(audioEngine.selectionEnd / audioEngine.duration)
                         let regionW = width * (regionEndRatio - regionStartRatio)
                         let regionX = padding + width * regionStartRatio + regionW / 2
-                        
+
                         Rectangle()
                             .fill(Color(hex: "0a84ff").opacity(0.4))
                             .frame(width: max(2, regionW))
                             .position(x: regionX, y: geometry.size.height / 2)
                     }
-                    
+
                     // Waveform
                     Canvas { context, size in
                         let centerY = size.height / 2
                         let samples = audioEngine.waveformSamples
                         guard samples.count > 1 else { return }
                         let step = width / CGFloat(samples.count - 1)
-                        
+
                         var path = Path()
                         for i in 0..<samples.count {
                             let x = padding + CGFloat(i) * step
@@ -1478,21 +1478,40 @@ struct PreAnalysisTimelineView: View {
                         }
                         context.stroke(path, with: .color(Color(hex: "6b6b6b")), lineWidth: 1)
                     }
-                    
+
+                    // Edge grabbers on top of the waveform
+                    if audioEngine.selectionEnd > audioEngine.selectionStart && audioEngine.duration > 0 {
+                        let regionStartX = padding + width * CGFloat(audioEngine.selectionStart / audioEngine.duration)
+                        let regionEndX = padding + width * CGFloat(audioEngine.selectionEnd / audioEngine.duration)
+                        let grabberHeight: CGFloat = min(40, geometry.size.height * 0.5)
+
+                        edgeGrabber()
+                            .frame(width: 4, height: grabberHeight)
+                            .position(x: regionStartX, y: geometry.size.height / 2)
+                        edgeGrabber()
+                            .frame(width: 4, height: grabberHeight)
+                            .position(x: regionEndX, y: geometry.size.height / 2)
+                    }
+
                     // Playhead
                     if audioEngine.duration > 0 {
-                        Rectangle()
-                            .fill(Color.white)
-                            .frame(width: 2)
-                            .position(x: playheadX, y: geometry.size.height / 2)
+                        PlayheadView(onDragToX: { x in
+                            guard audioEngine.duration > 0 else { return }
+                            let clamped = min(max(x, padding), padding + width)
+                            let t = Double((clamped - padding) / width) * audioEngine.duration
+                            audioEngine.seek(to: max(0, min(audioEngine.duration, t)))
+                        })
+                        .frame(width: 20, height: geometry.size.height)
+                        .position(x: playheadX, y: geometry.size.height / 2)
                     }
                 }
+                .coordinateSpace(name: "timeline")
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .local)
                         .onChanged { value in
                             guard audioEngine.duration > 0 else { return }
-                            
+
                             let startX = min(max(value.startLocation.x, padding), padding + width)
                             let currentX = min(max(value.location.x, padding), padding + width)
                             let clickTime = Double((startX - padding) / width) * audioEngine.duration
@@ -1502,17 +1521,29 @@ struct PreAnalysisTimelineView: View {
                             if !isDragging {
                                 isDragging = true
                                 dragStartTime = clickTime
-                                
-                                // Check if click is inside existing region
+
                                 let hasRegion = audioEngine.selectionEnd > audioEngine.selectionStart
-                                if hasRegion && clickTime >= audioEngine.selectionStart && clickTime <= audioEngine.selectionEnd {
-                                    dragMode = 2 // moving
-                                    regionDragOffset = clickTime - audioEngine.selectionStart
+                                let edgeThreshold: CGFloat = 8
+                                if hasRegion {
+                                    let regionStartX = padding + width * CGFloat(audioEngine.selectionStart / audioEngine.duration)
+                                    let regionEndX = padding + width * CGFloat(audioEngine.selectionEnd / audioEngine.duration)
+                                    if abs(value.startLocation.x - regionStartX) < edgeThreshold {
+                                        dragMode = 3 // resize start edge
+                                        regionDragOffset = audioEngine.selectionEnd  // fixed edge
+                                    } else if abs(value.startLocation.x - regionEndX) < edgeThreshold {
+                                        dragMode = 4 // resize end edge
+                                        regionDragOffset = audioEngine.selectionStart  // fixed edge
+                                    } else if clickTime >= audioEngine.selectionStart && clickTime <= audioEngine.selectionEnd {
+                                        dragMode = 2 // moving
+                                        regionDragOffset = clickTime - audioEngine.selectionStart
+                                    } else {
+                                        dragMode = 1 // creating
+                                    }
                                 } else {
                                     dragMode = 1 // creating
                                 }
                             }
-                            
+
                             if dragMode == 1 {
                                 // Create/resize selection from drag start to current position
                                 let selStart = min(dragStartTime, currentTime)
@@ -1523,7 +1554,7 @@ struct PreAnalysisTimelineView: View {
                                 let regionWidth = audioEngine.selectionEnd - audioEngine.selectionStart
                                 var newStart = currentTime - regionDragOffset
                                 var newEnd = newStart + regionWidth
-                                
+
                                 // Clamp to bounds
                                 if newStart < 0 {
                                     newStart = 0
@@ -1533,31 +1564,43 @@ struct PreAnalysisTimelineView: View {
                                     newEnd = audioEngine.duration
                                     newStart = audioEngine.duration - regionWidth
                                 }
-                                
+
                                 audioEngine.setSelection(start: newStart, end: newEnd)
+                            } else if dragMode == 3 {
+                                // Resize start edge; regionDragOffset holds the fixed end time
+                                let fixedEnd = regionDragOffset
+                                let newStart = max(0, min(currentTime, fixedEnd - 1.0))
+                                audioEngine.setSelection(start: newStart, end: fixedEnd)
+                            } else if dragMode == 4 {
+                                // Resize end edge; regionDragOffset holds the fixed start time
+                                let fixedStart = regionDragOffset
+                                let newEnd = min(audioEngine.duration, max(currentTime, fixedStart + 1.0))
+                                audioEngine.setSelection(start: fixedStart, end: newEnd)
                             }
                         }
                         .onEnded { value in
                             guard audioEngine.duration > 0 else { return }
-                            
+
                             let startX = min(max(value.startLocation.x, padding), padding + width)
                             let endX = min(max(value.location.x, padding), padding + width)
                             let dragDistance = abs(endX - startX)
                             let clickTime = Double((endX - padding) / width) * audioEngine.duration
-                            
-                            // If it was just a click (minimal drag), move playhead
+
+                            // If it was just a click (minimal drag), move playhead.
+                            // Don't clear the selection if the click was on an
+                            // edge handle or inside the region.
                             if dragDistance < 3 {
-                                // Check if clicked inside region
                                 let hasRegion = audioEngine.selectionEnd > audioEngine.selectionStart
                                 let clickedInRegion = hasRegion && clickTime >= audioEngine.selectionStart && clickTime <= audioEngine.selectionEnd
-                                
-                                if !clickedInRegion {
+                                let nearEdge = dragMode == 3 || dragMode == 4
+
+                                if !clickedInRegion && !nearEdge {
                                     audioEngine.clearSelection()
                                 }
-                                
+
                                 audioEngine.seek(to: clickTime)
                             }
-                            
+
                             isDragging = false
                             dragMode = 0
                             regionDragOffset = 0
@@ -1676,13 +1719,13 @@ struct TimelineView: View {
                     .frame(width: width, height: geometry.size.height)
                     .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                 
-                // Selection/play region
+                // Selection/play region (fill behind waveform)
                 if audioEngine.selectionEnd > audioEngine.selectionStart && audioEngine.duration > 0 {
                     let regionStartRatio = CGFloat(audioEngine.selectionStart / audioEngine.duration)
                     let regionEndRatio = CGFloat(audioEngine.selectionEnd / audioEngine.duration)
                     let regionW = width * (regionEndRatio - regionStartRatio)
                     let regionX = hPadding + width * regionStartRatio + regionW / 2
-                    
+
                     Rectangle()
                         .fill(Color(hex: "0a84ff").opacity(0.4))
                         .frame(width: max(2, regionW))
@@ -1705,21 +1748,40 @@ struct TimelineView: View {
                     }
                     context.stroke(path, with: .color(Color(hex: "6b6b6b")), lineWidth: 1)
                 }
-                
+
+                // Edge grabbers on top of the waveform
+                if audioEngine.selectionEnd > audioEngine.selectionStart && audioEngine.duration > 0 {
+                    let regionStartX = hPadding + width * CGFloat(audioEngine.selectionStart / audioEngine.duration)
+                    let regionEndX = hPadding + width * CGFloat(audioEngine.selectionEnd / audioEngine.duration)
+                    let grabberHeight: CGFloat = min(40, geometry.size.height * 0.5)
+
+                    edgeGrabber()
+                        .frame(width: 4, height: grabberHeight)
+                        .position(x: regionStartX, y: geometry.size.height / 2)
+                    edgeGrabber()
+                        .frame(width: 4, height: grabberHeight)
+                        .position(x: regionEndX, y: geometry.size.height / 2)
+                }
+
                 // Playhead
                 if audioEngine.duration > 0 {
-                    Rectangle()
-                        .fill(Color.white)
-                        .frame(width: 2)
-                        .position(x: playheadX, y: geometry.size.height / 2)
+                    PlayheadView(onDragToX: { x in
+                        guard audioEngine.duration > 0 else { return }
+                        let clamped = min(max(x, hPadding), hPadding + width)
+                        let t = Double((clamped - hPadding) / width) * audioEngine.duration
+                        audioEngine.seek(to: max(0, min(audioEngine.duration, t)))
+                    })
+                    .frame(width: 20, height: geometry.size.height)
+                    .position(x: playheadX, y: geometry.size.height / 2)
                 }
             }
+            .coordinateSpace(name: "timeline")
             .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .local)
                         .onChanged { value in
                             guard audioEngine.duration > 0 else { return }
-                            
+
                             let startX = min(max(value.startLocation.x, hPadding), hPadding + width)
                             let currentX = min(max(value.location.x, hPadding), hPadding + width)
                             let clickTime = Double((startX - hPadding) / width) * audioEngine.duration
@@ -1729,17 +1791,29 @@ struct TimelineView: View {
                             if !isDragging {
                                 isDragging = true
                                 dragStartTime = clickTime
-                                
-                                // Check if click is inside existing region
+
                                 let hasRegion = audioEngine.selectionEnd > audioEngine.selectionStart
-                                if hasRegion && clickTime >= audioEngine.selectionStart && clickTime <= audioEngine.selectionEnd {
-                                    dragMode = 2 // moving
-                                    regionDragOffset = clickTime - audioEngine.selectionStart
+                                let edgeThreshold: CGFloat = 8
+                                if hasRegion {
+                                    let regionStartX = hPadding + width * CGFloat(audioEngine.selectionStart / audioEngine.duration)
+                                    let regionEndX = hPadding + width * CGFloat(audioEngine.selectionEnd / audioEngine.duration)
+                                    if abs(value.startLocation.x - regionStartX) < edgeThreshold {
+                                        dragMode = 3 // resize start edge
+                                        regionDragOffset = audioEngine.selectionEnd  // fixed edge
+                                    } else if abs(value.startLocation.x - regionEndX) < edgeThreshold {
+                                        dragMode = 4 // resize end edge
+                                        regionDragOffset = audioEngine.selectionStart  // fixed edge
+                                    } else if clickTime >= audioEngine.selectionStart && clickTime <= audioEngine.selectionEnd {
+                                        dragMode = 2 // moving
+                                        regionDragOffset = clickTime - audioEngine.selectionStart
+                                    } else {
+                                        dragMode = 1 // creating
+                                    }
                                 } else {
                                     dragMode = 1 // creating
                                 }
                             }
-                            
+
                             if dragMode == 1 {
                                 // Create/resize selection from drag start to current position
                                 let selStart = min(dragStartTime, currentTime)
@@ -1750,7 +1824,7 @@ struct TimelineView: View {
                                 let regionWidth = audioEngine.selectionEnd - audioEngine.selectionStart
                                 var newStart = currentTime - regionDragOffset
                                 var newEnd = newStart + regionWidth
-                                
+
                                 // Clamp to bounds
                                 if newStart < 0 {
                                     newStart = 0
@@ -1760,28 +1834,40 @@ struct TimelineView: View {
                                     newEnd = audioEngine.duration
                                     newStart = audioEngine.duration - regionWidth
                                 }
-                                
+
                                 audioEngine.setSelection(start: newStart, end: newEnd)
+                            } else if dragMode == 3 {
+                                // Resize start edge; regionDragOffset holds the fixed end time
+                                let fixedEnd = regionDragOffset
+                                let newStart = max(0, min(currentTime, fixedEnd - 1.0))
+                                audioEngine.setSelection(start: newStart, end: fixedEnd)
+                            } else if dragMode == 4 {
+                                // Resize end edge; regionDragOffset holds the fixed start time
+                                let fixedStart = regionDragOffset
+                                let newEnd = min(audioEngine.duration, max(currentTime, fixedStart + 1.0))
+                                audioEngine.setSelection(start: fixedStart, end: newEnd)
                             }
                         }
                         .onEnded { value in
                             guard audioEngine.duration > 0 else { return }
-                            
+
                             let startX = min(max(value.startLocation.x, hPadding), hPadding + width)
                             let endX = min(max(value.location.x, hPadding), hPadding + width)
                             let dragDistance = abs(endX - startX)
                             let clickTime = Double((endX - hPadding) / width) * audioEngine.duration
-                            
-                            // If it was just a click (minimal drag), move playhead
+
+                            // If it was just a click (minimal drag), move playhead.
+                            // Don't clear the selection if the click was on an
+                            // edge handle or inside the region.
                             if dragDistance < 3 {
-                                // Check if clicked inside region
                                 let hasRegion = audioEngine.selectionEnd > audioEngine.selectionStart
                                 let clickedInRegion = hasRegion && clickTime >= audioEngine.selectionStart && clickTime <= audioEngine.selectionEnd
-                                
-                                if !clickedInRegion {
+                                let nearEdge = dragMode == 3 || dragMode == 4
+
+                                if !clickedInRegion && !nearEdge {
                                     audioEngine.clearSelection()
                                 }
-                                
+
                                 audioEngine.seek(to: clickTime)
                             }
                             
@@ -1825,24 +1911,76 @@ struct TimelineView: View {
 }
 
 // Playhead indicator view
+@ViewBuilder
+func edgeGrabber() -> some View {
+    RoundedRectangle(cornerRadius: 2)
+        .fill(
+            LinearGradient(
+                colors: [Color.white, Color(hex: "cccccc")],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 2)
+                .stroke(Color(hex: "0a84ff"), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
+}
+
+struct PlayheadTriangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: rect.midX, y: rect.minY))    // apex at top (touches line)
+            p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY)) // bottom-left
+            p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY)) // bottom-right
+            p.closeSubpath()
+        }
+    }
+}
+
 struct PlayheadView: View {
-    let isDragging: Bool
-    
+    // Called with the drag location's x coordinate in the parent's "timeline"
+    // coordinate space. Pass nil to render a non-interactive playhead.
+    var onDragToX: ((CGFloat) -> Void)? = nil
+    @State private var isDragging = false
+
+    private var grabberWidth: CGFloat { isDragging ? 20 : 16 }
+    private var grabberHeight: CGFloat { isDragging ? 16 : 12 }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Handle at top
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Color(hex: "30d158"))
-                .frame(width: isDragging ? 12 : 8, height: 8)
-                .shadow(color: Color(hex: "30d158").opacity(0.6), radius: isDragging ? 4 : 2)
-            
-            // Line
             Rectangle()
-                .fill(Color(hex: "30d158"))
+                .fill(Color.white)
                 .frame(width: 2)
-                .shadow(color: Color(hex: "30d158").opacity(0.6), radius: 2)
+
+            PlayheadTriangle()
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white, Color(hex: "cccccc")],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .overlay(
+                    PlayheadTriangle()
+                        .stroke(Color(hex: "222222"), lineWidth: 1)
+                )
+                .frame(width: grabberWidth, height: grabberHeight)
+                .shadow(color: .black.opacity(0.5), radius: 2, y: 1)
+                .contentShape(Rectangle())  // full bounding box is grabbable
+                .animation(.easeOut(duration: 0.1), value: isDragging)
+                .gesture(
+                    onDragToX.map { seek in
+                        DragGesture(minimumDistance: 0, coordinateSpace: .named("timeline"))
+                            .onChanged { value in
+                                isDragging = true
+                                seek(value.location.x)
+                            }
+                            .onEnded { _ in isDragging = false }
+                    }
+                )
         }
-        .animation(.easeOut(duration: 0.1), value: isDragging)
     }
 }
 
