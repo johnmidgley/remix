@@ -1609,6 +1609,10 @@ struct PreAnalysisTimelineView: View {
             }
             .frame(height: 100)
             .padding(.horizontal, 16)
+
+            MarkerBarView(hPadding: 16)
+                .padding(.top, 4)
+                .padding(.horizontal, 16)  // match the waveform's outer padding
         }
         .padding(.vertical, 12)
         .background(Color(hex: "111111"))
@@ -1700,14 +1704,15 @@ struct TimelineView: View {
     }
     
     var body: some View {
+        VStack(spacing: 4) {
         // Waveform + playhead + region
         GeometryReader { geometry in
             let hPadding: CGFloat = 16
             let width = geometry.size.width - (hPadding * 2)
-            let playheadX = audioEngine.duration > 0 
+            let playheadX = audioEngine.duration > 0
                 ? hPadding + width * CGFloat(audioEngine.currentTime / audioEngine.duration)
                 : hPadding
-            
+
             ZStack {
                 // Background that fills the padded area
                 RoundedRectangle(cornerRadius: 6)
@@ -1878,6 +1883,9 @@ struct TimelineView: View {
                 )
         }
         .frame(height: 80)
+
+            MarkerBarView(hPadding: 16)
+        }
         .background(Color(hex: "1e1e1e"))
         .overlay(
             Rectangle()
@@ -1911,6 +1919,99 @@ struct TimelineView: View {
 }
 
 // Playhead indicator view
+// MARK: - Marker Bar
+// Thin strip below the waveform that shows timeline markers. Passive markers
+// render yellow; the selected marker is red. Clicking empty space creates a
+// tentative marker; the first mixer change commits it, otherwise it's forgotten
+// the next time the user clicks elsewhere.
+struct MarkerBarView: View {
+    @EnvironmentObject var audioEngine: AudioEngine
+    let hPadding: CGFloat
+    var height: CGFloat = 36
+
+    /// Pixel-radius for tapping an existing marker vs creating a new one.
+    private let selectPixelTolerance: CGFloat = 8
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width - (hPadding * 2)
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color(hex: "151515"))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color(hex: "2a2a2a"), lineWidth: 1)
+                    )
+
+                if audioEngine.duration > 0 {
+                    // Render tentative marker always as "selected" (red) even
+                    // if selectedMarkerID lags a frame behind. Otherwise,
+                    // committed markers are red iff selected, else yellow.
+                    ForEach(audioEngine.allMarkers) { marker in
+                        let isTentative = audioEngine.pendingMarker?.id == marker.id
+                        let isSelected = isTentative || audioEngine.selectedMarkerID == marker.id
+                        let x = hPadding + width * CGFloat(marker.time / audioEngine.duration)
+                        MarkerTick(isSelected: isSelected)
+                            .frame(width: 7, height: geometry.size.height - 8)
+                            .position(x: x, y: geometry.size.height / 2)
+                            .contextMenu {
+                                Button("Delete Marker", role: .destructive) {
+                                    audioEngine.deleteMarker(id: marker.id)
+                                }
+                            }
+                            .onTapGesture {
+                                audioEngine.selectMarker(id: marker.id)
+                            }
+                            .gesture(
+                                // Drag-to-move only fires on the selected marker (via the
+                                // isSelected guard inside onChanged). minimumDistance: 2
+                                // lets single taps fall through to onTapGesture above.
+                                DragGesture(minimumDistance: 2, coordinateSpace: .named("markerBar"))
+                                    .onChanged { value in
+                                        guard isSelected,
+                                              audioEngine.duration > 0,
+                                              width > 0 else { return }
+                                        let clampedX = min(max(value.location.x, hPadding), hPadding + width)
+                                        let newT = Double((clampedX - hPadding) / width) * audioEngine.duration
+                                        audioEngine.moveMarker(id: marker.id, to: newT, movePlayhead: true)
+                                    }
+                            )
+                    }
+                }
+            }
+            .coordinateSpace(name: "markerBar")
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onEnded { value in
+                        guard audioEngine.duration > 0 else { return }
+                        let dx = abs(value.location.x - value.startLocation.x)
+                        guard dx < 4 else { return }  // ignore scrub-like gestures
+                        let clampedX = min(max(value.location.x, hPadding), hPadding + width)
+                        let t = Double((clampedX - hPadding) / width) * audioEngine.duration
+                        let tolSec = width > 0
+                            ? (Double(selectPixelTolerance) / Double(width)) * audioEngine.duration
+                            : 0.1
+                        audioEngine.markerBarTapped(at: t, selectToleranceSeconds: tolSec)
+                    }
+            )
+        }
+        .frame(height: height)
+    }
+}
+
+struct MarkerTick: View {
+    let isSelected: Bool
+
+    var body: some View {
+        let color = isSelected ? Color(hex: "ff453a") : Color(hex: "ffd60a")
+        Capsule()
+            .fill(color)
+            .overlay(Capsule().stroke(Color.black.opacity(0.5), lineWidth: 1))
+            .shadow(color: color.opacity(0.5), radius: isSelected ? 4 : 1)
+    }
+}
+
 @ViewBuilder
 func edgeGrabber() -> some View {
     RoundedRectangle(cornerRadius: 2)
@@ -2247,6 +2348,7 @@ struct MeterView: View {
 struct PanKnobView: View {
     @Binding var value: Double  // -1.0 (left) to 1.0 (right)
     @State private var isDragging = false
+    @State private var dragStartValue: Double? = nil
     var stemName: String = "Track"
     
     private let knobSize: CGFloat = 32
@@ -2303,10 +2405,14 @@ struct PanKnobView: View {
                     .frame(width: knobSize - 6, height: knobSize - 6)
                     .rotationEffect(.degrees(135))
                 
-                // Active indicator
+                // Active indicator — arc extends left or right of center.
+                // Use min/max so the trim range is always ascending (left side
+                // wouldn't render otherwise because `to < from`).
                 if abs(value) > 0.05 {
+                    let trimStart = 0.375 + min(0, value) * 0.375
+                    let trimEnd = 0.375 + max(0, value) * 0.375
                     Circle()
-                        .trim(from: 0.375, to: 0.375 + (value * 0.375))
+                        .trim(from: trimStart, to: trimEnd)
                         .stroke(
                             Color(hex: "0a84ff"),
                             style: StrokeStyle(lineWidth: 3, lineCap: .round)
@@ -2341,14 +2447,20 @@ struct PanKnobView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
+                        // Anchor to the value at mouse-down so horizontal
+                        // motion tracks relative to the click point: right
+                        // movement pans right, left movement pans left.
+                        if dragStartValue == nil {
+                            dragStartValue = value
+                        }
                         isDragging = true
-                        // Horizontal drag changes pan
-                        let delta = gesture.translation.width / 50
-                        let newValue = max(-1, min(1, value + delta))
-                        value = newValue
+                        let anchor = dragStartValue ?? value
+                        let delta = gesture.translation.width / 50  // 50pt drag = full range
+                        value = max(-1, min(1, anchor + delta))
                     }
                     .onEnded { _ in
                         isDragging = false
+                        dragStartValue = nil
                     }
             )
             .simultaneousGesture(

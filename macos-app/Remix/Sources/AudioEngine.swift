@@ -1,9 +1,51 @@
 import Foundation
 import AVFoundation
+import CoreMedia
+import AudioToolbox
 import Combine
 import AppKit
 import UniformTypeIdentifiers
 import CryptoKit
+
+/// Provides a Format popup for the bounce NSSavePanel. Updates both the
+/// panel's allowed content type and the filename extension when the user
+/// switches between WAV and M4A.
+private final class BounceFormatController: NSObject {
+    let view: NSView
+    private weak var panel: NSSavePanel?
+    private let baseName: String
+    private let popup: NSPopUpButton
+
+    init(panel: NSSavePanel, baseName: String) {
+        self.panel = panel
+        self.baseName = baseName
+        self.popup = NSPopUpButton(frame: NSRect(x: 80, y: 10, width: 200, height: 26), pullsDown: false)
+        self.view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 48))
+        super.init()
+
+        popup.addItems(withTitles: ["WAV (lossless)", "M4A (AAC, 256 kbps)"])
+        popup.target = self
+        popup.action = #selector(formatChanged(_:))
+
+        let label = NSTextField(labelWithString: "Format:")
+        label.frame = NSRect(x: 20, y: 13, width: 60, height: 20)
+        label.alignment = .right
+
+        view.addSubview(label)
+        view.addSubview(popup)
+    }
+
+    @objc private func formatChanged(_ sender: NSPopUpButton) {
+        guard let panel = panel else { return }
+        let isWAV = sender.indexOfSelectedItem == 0
+        panel.allowedContentTypes = isWAV ? [UTType.wav] : [UTType.mpeg4Audio]
+        let ext = isWAV ? "wav" : "m4a"
+        // Preserve any user-typed name; just swap the extension.
+        let current = panel.nameFieldStringValue as NSString
+        let stem = current.deletingPathExtension.isEmpty ? baseName : current.deletingPathExtension
+        panel.nameFieldStringValue = "\(stem).\(ext)"
+    }
+}
 
 // MARK: - Cache Manager
 /// Manages caching of analyzed audio stems
@@ -305,6 +347,29 @@ class AudioEngine: ObservableObject {
     @Published var isNormalizingStems: Bool = false
     @Published private(set) var stemsNormalized: Bool = false
     @Published var originalEnabled: Bool = false
+    // Timeline markers (committed). Tentative (not-yet-edited) markers live
+    // in `pendingMarker` and are rendered in `allMarkers` but not persisted
+    // until the user actually changes a mix setting.
+    @Published var markers: [Marker] = []
+    @Published var selectedMarkerID: UUID? = nil
+    @Published private(set) var pendingMarker: Marker? = nil
+    /// Pre-edit state captured the first time a marker is committed. Applied
+    /// when the playhead is before any committed marker.
+    private var initialMixerState: MixerPreset? = nil
+    private enum MarkerApplyState: Equatable {
+        case none
+        case initial
+        case marker(UUID)
+    }
+    private var lastApplied: MarkerApplyState = .none
+    private var isApplyingMarker: Bool = false
+    /// Marker that the user just edited — when it's the active marker we snap
+    /// to its full state instead of blending, so slider edits aren't
+    /// immediately stomped by the next crossfade tick. Cleared when the
+    /// active marker changes.
+    private var snappedMarkerID: UUID? = nil
+    /// Cross-fade duration when the playhead crosses a marker.
+    static let markerCrossfadeSeconds: Double = 1.0
     @Published private(set) var stemNormalizeGainsDB: [Float] = []
     @Published var waveformSamples: [Float] = []
     @Published var selectionStart: Double = 0
@@ -413,6 +478,11 @@ class AudioEngine: ObservableObject {
         var originalEnabled: Bool = false
         // Master fader (stem-path only). Stored as linear amp, default 1.0 = 0 dB.
         var masterFaderValue: Double = 1.0
+        // Timeline markers (committed only — tentative markers are never saved).
+        var markers: [Marker] = []
+        // State captured the first time a marker was committed. Restores mix
+        // when the playhead sits before every marker.
+        var initialMixerState: MixerPreset? = nil
 
         init(
             playbackRate: Float = 1.0,
@@ -428,7 +498,9 @@ class AudioEngine: ObservableObject {
             selectionEnd: Double = 0,
             stemNormalizeGains: [String: Float] = [:],
             originalEnabled: Bool = false,
-            masterFaderValue: Double = 1.0
+            masterFaderValue: Double = 1.0,
+            markers: [Marker] = [],
+            initialMixerState: MixerPreset? = nil
         ) {
             self.playbackRate = playbackRate
             self.pitch = pitch
@@ -444,6 +516,8 @@ class AudioEngine: ObservableObject {
             self.stemNormalizeGains = stemNormalizeGains
             self.originalEnabled = originalEnabled
             self.masterFaderValue = masterFaderValue
+            self.markers = markers
+            self.initialMixerState = initialMixerState
         }
 
         // Custom decoder: every field is decodeIfPresent so saved blobs from
@@ -465,6 +539,8 @@ class AudioEngine: ObservableObject {
             stemNormalizeGains = try c.decodeIfPresent([String: Float].self, forKey: .stemNormalizeGains) ?? [:]
             originalEnabled = try c.decodeIfPresent(Bool.self, forKey: .originalEnabled) ?? false
             masterFaderValue = try c.decodeIfPresent(Double.self, forKey: .masterFaderValue) ?? 1.0
+            markers = try c.decodeIfPresent([Marker].self, forKey: .markers) ?? []
+            initialMixerState = try c.decodeIfPresent(MixerPreset.self, forKey: .initialMixerState)
         }
     }
     
@@ -572,7 +648,9 @@ class AudioEngine: ObservableObject {
             selectionEnd: selectionEnd,
             stemNormalizeGains: savedStemNorm,
             originalEnabled: originalEnabled,
-            masterFaderValue: masterFaderValue
+            masterFaderValue: masterFaderValue,
+            markers: markers,
+            initialMixerState: initialMixerState
         )
 
         if let encoded = try? JSONEncoder().encode(settings) {
@@ -606,6 +684,22 @@ class AudioEngine: ObservableObject {
             applyEQSettings()
             originalEnabled = settings.originalEnabled
             masterFaderValue = settings.masterFaderValue
+            markers = settings.markers
+            initialMixerState = settings.initialMixerState
+            selectedMarkerID = nil
+            pendingMarker = nil
+            // Mark the active-at-restore marker as already applied so playback
+            // doesn't immediately stomp the just-restored mix state.
+            let activeAtRestore = settings.markers
+                .filter { $0.time <= settings.playheadPosition + 0.05 }
+                .max(by: { $0.time < $1.time })
+            if let m = activeAtRestore {
+                lastApplied = .marker(m.id)
+            } else if settings.initialMixerState != nil {
+                lastApplied = .initial
+            } else {
+                lastApplied = .none
+            }
         } else {
             resetSongSettingsToDefaults()
         }
@@ -628,6 +722,12 @@ class AudioEngine: ObservableObject {
         timePitchNode?.pitch = 0.0
         originalEnabled = false
         masterFaderValue = 1.0
+        markers = []
+        initialMixerState = nil
+        selectedMarkerID = nil
+        pendingMarker = nil
+        lastApplied = .none
+        snappedMarkerID = nil
     }
 
     /// Applies the pending playhead/selection values clamped to the current
@@ -1907,6 +2007,7 @@ class AudioEngine: ObservableObject {
         stop()
         pauseTime = time
         currentTime = time
+        applyActiveMarkerIfNeeded()
         if wasPlaying { play() }
     }
     
@@ -1918,11 +2019,13 @@ class AudioEngine: ObservableObject {
         // A single fader move can cross the "all at max" threshold, so we
         // re-evaluate every stem gain plus the master-source toggle.
         updateAllGains()
+        didChangeMix()
     }
 
     func setMasterFaderValue(_ value: Double) {
         masterFaderValue = max(0, min(faderMaxAmp(maxBoostDB: faderMasterMaxBoostDB), value))
         updateAllGains()
+        didChangeMix()
     }
 
     func setPanValue(_ value: Double, for index: Int) {
@@ -1930,18 +2033,21 @@ class AudioEngine: ObservableObject {
         panValues[index] = max(-1.0, min(1.0, value))
         updatePan(for: index)
         updateAllGains()
+        didChangeMix()
     }
 
     func toggleSolo(for index: Int) {
         guard index < soloStates.count else { return }
         soloStates[index].toggle()
         updateAllGains()
+        didChangeMix()
     }
 
     func toggleMute(for index: Int) {
         guard index < muteStates.count else { return }
         muteStates[index].toggle()
         updateAllGains()
+        didChangeMix()
     }
 
     func resetAllFaders() {
@@ -1952,12 +2058,14 @@ class AudioEngine: ObservableObject {
             muteStates[i] = false
         }
         masterFaderValue = 1.0
-        clearStemNormalizeGains()
         updateAllGains()
         updateAllPans()
+        didChangeMix()  // persist the reset into the marker-at-playhead (or virtual initial marker)
     }
 
     func resetAllSettings() {
+        clearAllMarkers()  // before resetAllFaders so reset doesn't try to write into a marker
+        clearStemNormalizeGains()
         resetAllFaders()
         setPlaybackRate(1.0)
         setPitch(0.0)
@@ -1967,11 +2075,25 @@ class AudioEngine: ObservableObject {
         }
     }
 
+    /// Removes every timeline marker (committed + tentative) and forgets the
+    /// virtual initial-state snapshot.
+    func clearAllMarkers() {
+        markers = []
+        pendingMarker = nil
+        selectedMarkerID = nil
+        initialMixerState = nil
+        lastApplied = .none
+        snappedMarkerID = nil
+    }
+
     // MARK: - Mixer Presets
 
     /// Snapshots the current per-stem mixer state (faders, pans, solo/mute,
     /// EQ including master, stem normalize gains) into a reusable preset.
-    func currentMixerPreset() -> MixerPreset {
+    /// When `includeMasterFader` is true (used by timeline markers) the master
+    /// fader is also captured — named presets leave it nil so loading one
+    /// doesn't stomp the user's master level.
+    func currentMixerPreset(includeMasterFader: Bool = false) -> MixerPreset {
         var preset = MixerPreset()
         for (i, name) in stemNames.enumerated() {
             if i < faderValues.count { preset.faderValues[name] = faderValues[i] }
@@ -1981,17 +2103,27 @@ class AudioEngine: ObservableObject {
             if i < stemNormalizeGainsDB.count { preset.stemNormalizeGains[name] = stemNormalizeGainsDB[i] }
         }
         preset.eqSettings = eqSettings
+        if includeMasterFader {
+            preset.masterFaderValue = masterFaderValue
+        }
         return preset
     }
 
     /// Overwrites current mixer state with the preset. Stems missing from the
     /// preset get sensible defaults (unity / centered / off / 0 dB).
     func applyMixerPreset(_ preset: MixerPreset) {
+        isApplyingMarker = true
+        defer { isApplyingMarker = false }
+
         for (i, name) in stemNames.enumerated() {
             if i < faderValues.count { faderValues[i] = preset.faderValues[name] ?? 1.0 }
             if i < panValues.count { panValues[i] = preset.panValues[name] ?? 0.0 }
             if i < muteStates.count { muteStates[i] = preset.muteStates[name] ?? false }
             if i < soloStates.count { soloStates[i] = preset.soloStates[name] ?? false }
+        }
+
+        if let master = preset.masterFaderValue {
+            masterFaderValue = master
         }
 
         eqSettings = preset.eqSettings
@@ -2002,13 +2134,229 @@ class AudioEngine: ObservableObject {
         updateAllPans()
     }
 
+    // MARK: - Timeline Markers
+
+    /// Committed markers plus any tentative marker awaiting a user edit.
+    var allMarkers: [Marker] {
+        if let pending = pendingMarker {
+            return markers + [pending]
+        }
+        return markers
+    }
+
+    /// Tolerance for editing a marker at the playhead (lenient — absorbs
+    /// float error after seeking to the marker's exact time).
+    private static let markerEditToleranceSeconds: Double = 0.15
+
+    /// Called by `MarkerBarView`. Converts the pixel-based selection tolerance
+    /// into a time tolerance so marker hit areas feel consistent regardless
+    /// of zoom. Seeks playhead to the resolved position so edits downstream
+    /// target the right marker.
+    func markerBarTapped(at time: Double, selectToleranceSeconds tol: Double) {
+        let clamped = max(0, min(duration, time))
+        // Click on existing committed marker?
+        if let existing = markers.min(by: { abs($0.time - clamped) < abs($1.time - clamped) }),
+           abs(existing.time - clamped) < tol {
+            pendingMarker = nil
+            selectedMarkerID = existing.id
+            seek(to: existing.time)
+            return
+        }
+        // Click on already-pending tentative marker?
+        if let pending = pendingMarker, abs(pending.time - clamped) < tol {
+            selectedMarkerID = pending.id
+            seek(to: pending.time)
+            return
+        }
+        // New tentative. Seek first so the tentative's pre-edit state matches
+        // whatever the mix looks like at the new playhead (i.e. after any
+        // prior-marker or initial state has been applied).
+        seek(to: clamped)
+        let tentative = Marker(time: clamped, state: currentMixerPreset(includeMasterFader: true))
+        pendingMarker = tentative
+        selectedMarkerID = tentative.id
+    }
+
+    /// Called from every user-facing mix mutation. Commits/updates the marker
+    /// at the current playhead (if any). When no marker is near the playhead
+    /// but the playhead is before the first explicit marker (or none exist),
+    /// updates the "virtual" initial-state marker instead. Between two
+    /// committed markers, edits stay in live state and don't persist.
+    private func didChangeMix() {
+        if isApplyingMarker { return }
+        let tol = Self.markerEditToleranceSeconds
+        let snapshot = currentMixerPreset(includeMasterFader: true)
+
+        // Commit pending tentative if playhead is at its time.
+        if let pending = pendingMarker, abs(pending.time - currentTime) < tol {
+            // First-ever commit: capture the pre-edit state as the "before any
+            // marker" baseline so seeking earlier can restore it. Only if
+            // initial wasn't already established from earlier edits.
+            if markers.isEmpty && initialMixerState == nil {
+                initialMixerState = pending.state
+            }
+            var committed = pending
+            committed.state = snapshot
+            markers.append(committed)
+            markers.sort { $0.time < $1.time }
+            pendingMarker = nil
+            selectedMarkerID = committed.id
+            lastApplied = .marker(committed.id)
+            snappedMarkerID = committed.id  // suppress blend-overwrite during edit
+            return
+        }
+
+        // Update a committed marker the playhead is sitting on.
+        if let idx = markers.firstIndex(where: { abs($0.time - currentTime) < tol }) {
+            markers[idx].state = snapshot
+            selectedMarkerID = markers[idx].id
+            lastApplied = .marker(markers[idx].id)
+            snappedMarkerID = markers[idx].id
+            return
+        }
+
+        // Playhead is before every explicit marker — update the virtual
+        // initial marker so it always reflects the "pre-first-marker" state.
+        let firstMarkerTime = markers.first?.time ?? Double.infinity
+        if currentTime < firstMarkerTime - tol {
+            initialMixerState = snapshot
+            lastApplied = .initial
+            return
+        }
+
+        // Between explicit markers — edits stay in live state and don't persist.
+    }
+
+    /// Moves a marker (committed or tentative) to a new time. When
+    /// `movePlayhead` is true, the playhead position is updated visually
+    /// (currentTime + pauseTime) but playback nodes aren't touched — so a
+    /// continuous drag doesn't restart audio on every tick. Caller can do a
+    /// full `seek` on drag-end if needed.
+    func moveMarker(id: UUID, to time: Double, movePlayhead: Bool = false) {
+        let clamped = max(0, min(duration, time))
+        if pendingMarker?.id == id {
+            pendingMarker?.time = clamped
+        } else if let idx = markers.firstIndex(where: { $0.id == id }) {
+            markers[idx].time = clamped
+            markers.sort { $0.time < $1.time }
+        } else {
+            return
+        }
+        if movePlayhead {
+            currentTime = clamped
+            pauseTime = clamped
+        }
+        applyActiveMarkerIfNeeded()
+    }
+
+    /// Removes a specific marker (committed or tentative).
+    func deleteMarker(id: UUID) {
+        if pendingMarker?.id == id {
+            pendingMarker = nil
+        } else if let idx = markers.firstIndex(where: { $0.id == id }) {
+            markers.remove(at: idx)
+        } else {
+            return
+        }
+        if selectedMarkerID == id { selectedMarkerID = nil }
+        if case let .marker(mid) = lastApplied, mid == id {
+            lastApplied = .none
+        }
+        applyActiveMarkerIfNeeded()
+    }
+
+    /// Removes the selected marker (committed or tentative).
+    func deleteSelectedMarker() {
+        guard let id = selectedMarkerID else { return }
+        deleteMarker(id: id)
+    }
+
+    /// Selects a specific marker and seeks the playhead to its time.
+    func selectMarker(id: UUID) {
+        guard let m = allMarkers.first(where: { $0.id == id }) else { return }
+        if pendingMarker?.id != id {
+            pendingMarker = nil
+        }
+        selectedMarkerID = id
+        seek(to: m.time)
+    }
+
+    /// Called whenever `currentTime` changes. Blends into the active
+    /// committed marker's state over `markerCrossfadeSeconds`; falls back to
+    /// the initial state for times before any marker. Also discards the
+    /// tentative marker if the playhead has moved away from it.
+    private func applyActiveMarkerIfNeeded() {
+        // Discard tentative if the playhead has moved away from it — the user
+        // didn't change anything, so it's forgotten.
+        if let pending = pendingMarker,
+           abs(pending.time - currentTime) > Self.markerEditToleranceSeconds {
+            pendingMarker = nil
+            if selectedMarkerID == pending.id { selectedMarkerID = nil }
+        }
+
+        let active = markers
+            .filter { $0.time <= currentTime + 0.05 }
+            .max(by: { $0.time < $1.time })
+
+        // Clear the "snapped" edit flag when the playhead leaves that marker.
+        if let snapped = snappedMarkerID, snapped != active?.id {
+            snappedMarkerID = nil
+        }
+
+        if let m = active {
+            // Find the previous marker's state (or initial) to blend FROM.
+            let prev = markers
+                .filter { $0.time < m.time }
+                .max(by: { $0.time < $1.time })
+            let sourceState = prev?.state ?? initialMixerState ?? currentMixerPreset(includeMasterFader: true)
+
+            let duration = Self.markerCrossfadeSeconds
+            let rawProgress = duration > 0
+                ? (currentTime - m.time) / duration
+                : 1.0
+            let progress = min(1.0, max(0.0, rawProgress))
+
+            // User just edited this marker — apply its full state directly so
+            // the blend doesn't overwrite their slider move next tick.
+            if snappedMarkerID == m.id {
+                if lastApplied != .marker(m.id) {
+                    applyMixerPreset(m.state)
+                    lastApplied = .marker(m.id)
+                }
+                return
+            }
+
+            if progress >= 1.0 {
+                if lastApplied != .marker(m.id) {
+                    applyMixerPreset(m.state)
+                    lastApplied = .marker(m.id)
+                }
+            } else {
+                // Mid-crossfade — apply a blended state every tick.
+                let eased = progress * progress * (3 - 2 * progress)  // smoothstep
+                let blended = MixerPreset.lerp(sourceState, m.state, t: eased)
+                applyMixerPreset(blended)
+                lastApplied = .marker(m.id)  // track active marker; blend re-runs on next tick
+            }
+        } else if let initial = initialMixerState {
+            if lastApplied != .initial {
+                applyMixerPreset(initial)
+                lastApplied = .initial
+            }
+        } else {
+            lastApplied = .none
+        }
+    }
+
     /// Toggles stem normalization. If currently applied, clears it; otherwise
     /// triggers analysis + gain application.
     func toggleStemNormalize() {
         if stemsNormalized {
             clearStemNormalizeGains()
+            didChangeMix()
+            saveCurrentSongSettings()  // persist immediately so a crash/force-quit doesn't lose it
         } else {
-            normalizeStemLevels()
+            normalizeStemLevels()  // calls didChangeMix + saveCurrentSongSettings on async completion
         }
     }
 
@@ -2037,6 +2385,8 @@ class AudioEngine: ObservableObject {
                 }
                 self.stemNormalizeGainsDB = gains
                 self.applyStemNormalizeGains()
+                self.didChangeMix()
+                self.saveCurrentSongSettings()
             }
         }
     }
@@ -2090,6 +2440,7 @@ class AudioEngine: ObservableObject {
         
         // Apply to audio nodes immediately
         applyEQToNode(target: target, bandIndex: bandIndex, gain: gain, q: q)
+        didChangeMix()
     }
     
     private func applyEQToNode(target: String, bandIndex: Int, gain: Float, q: Float) {
@@ -2174,6 +2525,7 @@ class AudioEngine: ObservableObject {
         
         // Increment counter to force UI refresh
         eqResetCounter += 1
+        didChangeMix()
     }
 
     func setPlaybackRate(_ rate: Float) {
@@ -2404,7 +2756,8 @@ class AudioEngine: ObservableObject {
         }
         
         currentTime = min(time, duration)
-        
+        applyActiveMarkerIfNeeded()
+
         // Update meters from real audio levels
         if hasSession {
             // Analyzed mode: update per-stem meters
@@ -2444,15 +2797,28 @@ class AudioEngine: ObservableObject {
     // MARK: - Bounce/Export
     func bounceToFile() {
         guard hasSession else { return }
-        
+
+        let baseName: String
+        if let inputURL = currentInputURL {
+            baseName = "\(inputURL.deletingPathExtension().lastPathComponent)-remix"
+        } else {
+            baseName = "bounced_mix"
+        }
+
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType.wav].compactMap { $0 }
-        panel.nameFieldStringValue = "bounced_mix.wav"
+        panel.allowedContentTypes = [UTType.wav]
+        panel.nameFieldStringValue = "\(baseName).wav"
         panel.message = "Save mixed audio"
-        
+
+        // Format dropdown accessory view — NSSavePanel doesn't show one
+        // automatically for allowedContentTypes.
+        let formatController = BounceFormatController(panel: panel, baseName: baseName)
+        panel.accessoryView = formatController.view
+
         panel.begin { [weak self] (response: NSApplication.ModalResponse) in
+            _ = formatController  // keep alive until panel closes
             guard let self = self, response == .OK, let url = panel.url else { return }
-            
+
             DispatchQueue.global(qos: .userInitiated).async {
                 self.performBounce(to: url)
             }
@@ -2519,13 +2885,118 @@ class AudioEngine: ObservableObject {
             }
         }
         
-        // Write to file
+        // Write to file — branch on extension: WAV (lossless PCM) vs M4A (AAC).
         do {
-            let outputFile = try AVAudioFile(forWriting: url, settings: firstBuffer.format.settings)
-            try outputFile.write(from: outputBuffer)
+            let ext = url.pathExtension.lowercased()
+            if ext == "m4a" || ext == "aac" {
+                try writeAACM4A(buffer: outputBuffer, to: url)
+            } else {
+                let outputFile = try AVAudioFile(forWriting: url, settings: firstBuffer.format.settings)
+                try outputFile.write(from: outputBuffer)
+            }
         } catch {
             handleError("Failed to write file: \(error.localizedDescription)")
         }
+    }
+
+    /// Encodes a float PCM buffer to AAC in an .m4a container via AVAssetWriter.
+    private func writeAACM4A(buffer: AVAudioPCMBuffer, to url: URL) throws {
+        try? FileManager.default.removeItem(at: url)
+
+        let sampleRate = buffer.format.sampleRate
+        let channelCount = Int(buffer.format.channelCount)
+
+        var channelLayout = AudioChannelLayout()
+        channelLayout.mChannelLayoutTag = channelCount == 1
+            ? kAudioChannelLayoutTag_Mono
+            : kAudioChannelLayoutTag_Stereo
+
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: channelCount,
+            AVEncoderBitRateKey: 256_000,
+            AVChannelLayoutKey: Data(bytes: &channelLayout, count: MemoryLayout<AudioChannelLayout>.size)
+        ]
+
+        let writer = try AVAssetWriter(outputURL: url, fileType: .m4a)
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
+        input.expectsMediaDataInRealTime = false
+        guard writer.canAdd(input) else {
+            throw NSError(domain: "remix.bounce", code: 1, userInfo: [NSLocalizedDescriptionKey: "AVAssetWriter rejected AAC input"])
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw writer.error ?? NSError(domain: "remix.bounce", code: 2)
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        guard let sampleBuffer = sampleBufferFromPCM(buffer: buffer) else {
+            throw NSError(domain: "remix.bounce", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not build CMSampleBuffer"])
+        }
+
+        // AAC encoding takes time; we wait for the input to drain between
+        // the single append and the finish call.
+        while !input.isReadyForMoreMediaData {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if !input.append(sampleBuffer) {
+            throw writer.error ?? NSError(domain: "remix.bounce", code: 4)
+        }
+        input.markAsFinished()
+
+        let sem = DispatchSemaphore(value: 0)
+        writer.finishWriting { sem.signal() }
+        sem.wait()
+
+        if writer.status == .failed {
+            throw writer.error ?? NSError(domain: "remix.bounce", code: 5)
+        }
+    }
+
+    /// Wraps an AVAudioPCMBuffer (non-interleaved float32) into a CMSampleBuffer
+    /// suitable for AVAssetWriterInput.append.
+    private func sampleBufferFromPCM(buffer: AVAudioPCMBuffer) -> CMSampleBuffer? {
+        let asbd = buffer.format.streamDescription.pointee
+        var localASBD = asbd
+        var formatDescription: CMAudioFormatDescription?
+        let status = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &localASBD,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &formatDescription
+        )
+        guard status == noErr, let fmt = formatDescription else { return nil }
+
+        var sampleBuffer: CMSampleBuffer?
+        let sampleCount = CMItemCount(buffer.frameLength)
+        let createStatus = CMAudioSampleBufferCreateWithPacketDescriptions(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: nil,
+            dataReady: false,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: fmt,
+            sampleCount: sampleCount,
+            presentationTimeStamp: .zero,
+            packetDescriptions: nil,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard createStatus == noErr, let sb = sampleBuffer else { return nil }
+
+        let setStatus = CMSampleBufferSetDataBufferFromAudioBufferList(
+            sb,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: 0,
+            bufferList: buffer.audioBufferList
+        )
+        guard setStatus == noErr else { return nil }
+        return sb
     }
     
     // MARK: - Cleanup
@@ -2591,6 +3062,12 @@ class AudioEngine: ObservableObject {
 
         stemNormalizeGainsDB = []
         stemsNormalized = false
+        markers = []
+        initialMixerState = nil
+        selectedMarkerID = nil
+        pendingMarker = nil
+        lastApplied = .none
+        snappedMarkerID = nil
 
         // Clean up temp directory
         if let tempDir = tempDirectory {

@@ -106,6 +106,11 @@ struct RemixApp: App {
                 .keyboardShortcut("r", modifiers: [.command, .option])
                 .disabled(!audioEngine.hasSession)
 
+                Button("Clear All Markers") {
+                    audioEngine.clearAllMarkers()
+                }
+                .disabled(audioEngine.markers.isEmpty && audioEngine.pendingMarker == nil)
+
                 Divider()
 
                 Button(stemNormalizeMenuTitle(
@@ -469,7 +474,7 @@ struct SavePresetSheet: View {
 
     private func save() {
         guard !trimmedName.isEmpty else { return }
-        presetStore.save(audioEngine.currentMixerPreset(), name: trimmedName)
+        presetStore.save(audioEngine.currentMixerPreset(includeMasterFader: true), name: trimmedName)
         isPresented = false
     }
 }
