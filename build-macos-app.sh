@@ -149,6 +149,7 @@ swiftc \
     -framework AVFoundation \
     -framework CoreAudio \
     -framework Accelerate \
+    -framework MediaPlayer \
     "${SWIFT_SOURCES[@]}" \
     -o "$MACOS_DIR/Remix"
 

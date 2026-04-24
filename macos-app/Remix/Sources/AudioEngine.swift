@@ -4,6 +4,7 @@ import CoreMedia
 import AudioToolbox
 import Combine
 import AppKit
+import MediaPlayer
 import UniformTypeIdentifiers
 import CryptoKit
 
@@ -588,6 +589,7 @@ class AudioEngine: ObservableObject {
         }
         
         setupAudioEngine()
+        setupRemoteCommands()
 
         // Restore global UI settings only
         restoreGlobalSettings()
@@ -943,7 +945,8 @@ class AudioEngine: ObservableObject {
             self.fileName = url.lastPathComponent
             self.hasCachedAnalysis = hasCache
             self.loadedFromCache = false
-            
+            self.updateNowPlayingInfo()
+
             // Load settings for this song
             self.loadSongSettings()
         }
@@ -1809,6 +1812,7 @@ class AudioEngine: ObservableObject {
         } else if hasLoadedFile {
             playOriginalAudio()
         }
+        updateNowPlayingInfo()
     }
     
     private func playMixedAudio() {
@@ -1981,6 +1985,7 @@ class AudioEngine: ObservableObject {
         isPlaying = false
         // Don't stop timer - let meters decay naturally
         startMeterDecayTimer()
+        updateNowPlayingInfo()
     }
 
     func stop() {
@@ -2009,8 +2014,133 @@ class AudioEngine: ObservableObject {
         currentTime = time
         applyActiveMarkerIfNeeded()
         if wasPlaying { play() }
+        updateNowPlayingInfo()
     }
-    
+
+    // MARK: - Remote Commands (media keys, Bluetooth headsets, Control Center)
+
+    private func setupRemoteCommands() {
+        installLocalMediaKeyMonitor()
+        let cc = MPRemoteCommandCenter.shared()
+
+        cc.playCommand.addTarget { [weak self] _ in
+            guard let self = self, self.hasSession else { return .noActionableNowPlayingItem }
+            if !self.isPlaying { self.play() }
+            return .success
+        }
+        cc.pauseCommand.addTarget { [weak self] _ in
+            guard let self = self, self.hasSession else { return .noActionableNowPlayingItem }
+            if self.isPlaying { self.pause() }
+            return .success
+        }
+        cc.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self = self, self.hasSession else { return .noActionableNowPlayingItem }
+            self.togglePlayback()
+            return .success
+        }
+        cc.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self = self, self.hasSession else { return .noActionableNowPlayingItem }
+            self.seekToNextMarker()
+            return .success
+        }
+        cc.previousTrackCommand.addTarget { [weak self] _ in
+            guard let self = self, self.hasSession else { return .noActionableNowPlayingItem }
+            self.seekToPreviousMarker()
+            return .success
+        }
+
+        // Enable the commands explicitly; nextTrack/previousTrack are off by
+        // default on some macOS versions.
+        cc.playCommand.isEnabled = true
+        cc.pauseCommand.isEnabled = true
+        cc.togglePlayPauseCommand.isEnabled = true
+        cc.nextTrackCommand.isEnabled = true
+        cc.previousTrackCommand.isEnabled = true
+    }
+
+    private func seekToNextMarker() {
+        let next = markers.first { $0.time > currentTime + 0.25 }
+        if let next = next {
+            seek(to: next.time)
+        } else {
+            seek(to: duration)
+        }
+    }
+
+    private func seekToPreviousMarker() {
+        // "Previous" mirrors typical music-app behavior:
+        //  - if we're comfortably inside the active marker (>1s past it),
+        //    jump to the start of the active marker
+        //  - otherwise, jump to the marker before the active one (or to 0).
+        let active = markers
+            .filter { $0.time <= currentTime + 0.01 }
+            .max(by: { $0.time < $1.time })
+        if let active = active, currentTime - active.time > 1.0 {
+            seek(to: active.time)
+        } else if let active = active {
+            let prev = markers.last { $0.time < active.time }
+            seek(to: prev?.time ?? 0)
+        } else {
+            seek(to: 0)
+        }
+    }
+
+    /// Captures media-key presses (Play/Pause/Next/Previous) while our app
+    /// is focused and consumes them so macOS doesn't also hand them to
+    /// Music.app. Doesn't work globally — the app has to be frontmost — but
+    /// avoids the MPRemoteCommandCenter / Music.app priority fight for the
+    /// common case where the user is already interacting with Remix.
+    private func installLocalMediaKeyMonitor() {
+        NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { [weak self] event in
+            guard let self = self else { return event }
+            // System-defined event subtype 8 carries HID keyboard events,
+            // which is what media keys come through as.
+            guard event.type == .systemDefined, event.subtype.rawValue == 8 else { return event }
+            let data1 = event.data1
+            let keyCode = Int((data1 & 0xFFFF0000) >> 16)
+            let keyFlags = Int(data1 & 0x0000FFFF)
+            let keyIsDown = ((keyFlags & 0xFF00) >> 8) == 0xA
+            guard keyIsDown else { return event }
+
+            // NX_KEYTYPE_* from IOKit/hidsystem/ev_keymap.h
+            switch keyCode {
+            case 16:                 // NX_KEYTYPE_PLAY
+                self.togglePlayback()
+                return nil
+            case 17, 19:             // NX_KEYTYPE_NEXT / NX_KEYTYPE_FAST
+                self.seekToNextMarker()
+                return nil
+            case 18, 20:             // NX_KEYTYPE_PREVIOUS / NX_KEYTYPE_REWIND
+                self.seekToPreviousMarker()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    /// Populates the system Now Playing Info — required for macOS to route
+    /// media keys / Bluetooth transport buttons / Control Center widget to
+    /// the commands registered above.
+    func updateNowPlayingInfo() {
+        var info: [String: Any] = [:]
+        info[MPMediaItemPropertyTitle] = fileName ?? "Remix"
+        info[MPMediaItemPropertyPlaybackDuration] = duration
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? Double(playbackRate) : 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+
+        let state: MPNowPlayingPlaybackState
+        if !hasSession {
+            state = .stopped
+        } else if isPlaying {
+            state = .playing
+        } else {
+            state = .paused
+        }
+        MPNowPlayingInfoCenter.default().playbackState = state
+    }
+
     // MARK: - Mixer Control
     func setFaderValue(_ value: Double, for index: Int) {
         guard index < faderValues.count else { return }
@@ -2110,10 +2240,14 @@ class AudioEngine: ObservableObject {
     }
 
     /// Overwrites current mixer state with the preset. Stems missing from the
-    /// preset get sensible defaults (unity / centered / off / 0 dB).
-    func applyMixerPreset(_ preset: MixerPreset) {
+    /// preset get sensible defaults (unity / centered / off / 0 dB). When
+    /// `userInitiated` is true, the change is recorded through the normal
+    /// marker-edit flow — so loading a preset at playhead=0 updates the
+    /// virtual initial marker, loading at an explicit marker updates that
+    /// marker, etc. Automation crossfades pass false so crossfades don't
+    /// rewrite markers.
+    func applyMixerPreset(_ preset: MixerPreset, userInitiated: Bool = false) {
         isApplyingMarker = true
-        defer { isApplyingMarker = false }
 
         for (i, name) in stemNames.enumerated() {
             if i < faderValues.count { faderValues[i] = preset.faderValues[name] ?? 1.0 }
@@ -2132,6 +2266,12 @@ class AudioEngine: ObservableObject {
         stemNormalizeGainsDB = stemNames.map { preset.stemNormalizeGains[$0] ?? 0 }
         applyStemNormalizeGains()  // calls updateAllGains, which also updates the master source
         updateAllPans()
+
+        isApplyingMarker = false
+
+        if userInitiated {
+            didChangeMix()
+        }
     }
 
     // MARK: - Timeline Markers
@@ -2826,76 +2966,256 @@ class AudioEngine: ObservableObject {
     }
     
     private func performBounce(to url: URL) {
-        // Build volumes array
-        var volumes = faderValues
-        let hasSolo = soloStates.contains(true)
-        
-        for i in 0..<volumes.count {
-            if muteStates[i] || (hasSolo && !soloStates[i]) {
-                volumes[i] = 0
+        // Snapshot everything we need on the main thread so offline rendering
+        // doesn't race with live UI updates.
+        let buffersSnapshot = audioBuffers
+        let stemNamesSnapshot = stemNames
+        let markersSnapshot = markers
+        let initialSnapshot = initialMixerState
+        let fallbackStateSnapshot = currentMixerPreset(includeMasterFader: true)
+        let startTime = (selectionEnd > selectionStart) ? selectionStart : 0
+        let endTime = (selectionEnd > selectionStart) ? selectionEnd : duration
+
+        do {
+            try performBounceOffline(
+                to: url,
+                buffers: buffersSnapshot,
+                stemNames: stemNamesSnapshot,
+                markers: markersSnapshot,
+                initialState: initialSnapshot,
+                fallbackState: fallbackStateSnapshot,
+                startTime: startTime,
+                endTime: endTime
+            )
+        } catch {
+            DispatchQueue.main.async { [weak self] in
+                self?.handleError("Failed to write file: \(error.localizedDescription)")
             }
         }
-        
-        // Mix audio buffers
-        guard let firstBuffer = audioBuffers.first else { return }
-        let frameCount = Int(firstBuffer.frameLength)
-        let channelCount = Int(firstBuffer.format.channelCount)
-        let hasSelection = selectionEnd > selectionStart
-        let range = hasSelection ? selectionFrameRange() : (start: 0, length: frameCount)
-        guard range.length > 0 else { return }
-        
-        var mixedSamples = [Float](repeating: 0, count: range.length * channelCount)
-        
-        for (i, buffer) in audioBuffers.enumerated() {
-            guard i < volumes.count else { continue }
-            let volume = Float(volumes[i])
-            
-            for ch in 0..<channelCount {
-                if let channelData = buffer.floatChannelData?[ch] {
-                    let endFrame = min(range.start + range.length, Int(buffer.frameLength))
-                    if endFrame <= range.start { continue }
-                    for frame in range.start..<endFrame {
-                        let outIndex = (frame - range.start) * channelCount + ch
-                        mixedSamples[outIndex] += channelData[frame] * volume
+    }
+
+    /// Offline-renders the mix through a dedicated AVAudioEngine so every
+    /// stage in the live chain — per-stem EQ, master EQ, stem normalize,
+    /// master fader, pan, mute/solo, and marker-automation crossfades — is
+    /// baked into the output. The live engine keeps running untouched.
+    private func performBounceOffline(
+        to url: URL,
+        buffers: [AVAudioPCMBuffer],
+        stemNames: [String],
+        markers: [Marker],
+        initialState: MixerPreset?,
+        fallbackState: MixerPreset,
+        startTime: Double,
+        endTime: Double
+    ) throws {
+        guard let firstBuffer = buffers.first, endTime > startTime else { return }
+        let processingFormat = firstBuffer.format
+        let sampleRate = processingFormat.sampleRate
+        let channelCount = processingFormat.channelCount
+        let totalFrames = AVAudioFramePosition((endTime - startTime) * sampleRate)
+        let startFrame = Int(startTime * sampleRate)
+        let sliceLength = Int(totalFrames)
+
+        let offEngine = AVAudioEngine()
+
+        // Summing mixer — EQs are single-input nodes, so per-stem EQ outputs
+        // need to mix here before they can feed a single master EQ.
+        let offSum = AVAudioMixerNode()
+        offEngine.attach(offSum)
+
+        // Master EQ: mirrors the live masterEQNode.
+        let offMasterEQ = AVAudioUnitEQ(numberOfBands: 8)
+        configureEQNode(offMasterEQ)
+        offEngine.attach(offMasterEQ)
+
+        // Per-stem player + EQ chain. Each stem EQ connects to a distinct
+        // bus on the summing mixer so their signals actually mix.
+        var offPlayers: [AVAudioPlayerNode] = []
+        var offEqs: [AVAudioUnitEQ] = []
+        for (i, _) in buffers.enumerated() {
+            let player = AVAudioPlayerNode()
+            let eq = AVAudioUnitEQ(numberOfBands: 8)
+            configureEQNode(eq)
+            offEngine.attach(player)
+            offEngine.attach(eq)
+            offEngine.connect(player, to: eq, format: processingFormat)
+            offEngine.connect(eq, to: offSum, fromBus: 0, toBus: i, format: processingFormat)
+            offPlayers.append(player)
+            offEqs.append(eq)
+        }
+
+        // Sum → master EQ → engine's main mixer (which drives the render buffer).
+        offEngine.connect(offSum, to: offMasterEQ, format: processingFormat)
+        offEngine.connect(offMasterEQ, to: offEngine.mainMixerNode, format: processingFormat)
+
+        let chunkSize: AVAudioFrameCount = 4096
+        try offEngine.enableManualRenderingMode(.offline, format: processingFormat, maximumFrameCount: chunkSize)
+        try offEngine.start()
+
+        // Schedule the sliced stem buffers and start players.
+        for (i, buffer) in buffers.enumerated() where i < offPlayers.count {
+            let slice = sliceBuffer(buffer, start: startFrame, length: sliceLength) ?? buffer
+            offPlayers[i].scheduleBuffer(slice, at: nil, options: [])
+            offPlayers[i].play()
+        }
+
+        // Pick an output target. For WAV we write directly; for M4A we
+        // render to a temp WAV first, then transcode in a single pass.
+        let ext = url.pathExtension.lowercased()
+        let renderURL: URL
+        let needsM4ATranscode = (ext == "m4a" || ext == "aac")
+        if needsM4ATranscode {
+            renderURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("remix-bounce-\(UUID().uuidString).wav")
+        } else {
+            renderURL = url
+        }
+
+        let outputFile = try AVAudioFile(forWriting: renderURL, settings: processingFormat.settings)
+        guard let renderBuffer = AVAudioPCMBuffer(
+            pcmFormat: offEngine.manualRenderingFormat,
+            frameCapacity: chunkSize
+        ) else {
+            throw NSError(domain: "remix.bounce", code: 10, userInfo: [NSLocalizedDescriptionKey: "Could not allocate render buffer"])
+        }
+
+        var rendered: AVAudioFramePosition = 0
+        while rendered < totalFrames {
+            let framesThisChunk = AVAudioFrameCount(min(AVAudioFramePosition(chunkSize), totalFrames - rendered))
+
+            // Evaluate the automated mixer state at this chunk's start time
+            // and apply it to the offline nodes. This is what captures marker
+            // crossfades and initial-state recalls.
+            let simTime = startTime + Double(rendered) / sampleRate
+            let state = evaluateMixerState(
+                at: simTime,
+                markers: markers,
+                initial: initialState,
+                fallback: fallbackState
+            )
+            applyPresetToOfflineGraph(
+                state,
+                stemNames: stemNames,
+                players: offPlayers,
+                eqs: offEqs,
+                masterEQ: offMasterEQ
+            )
+
+            let status = try offEngine.renderOffline(framesThisChunk, to: renderBuffer)
+            switch status {
+            case .success:
+                try outputFile.write(from: renderBuffer)
+                rendered += AVAudioFramePosition(framesThisChunk)
+            case .cannotDoInCurrentContext:
+                Thread.sleep(forTimeInterval: 0.001)
+            case .insufficientDataFromInputNode:
+                rendered += AVAudioFramePosition(framesThisChunk)
+            case .error:
+                throw NSError(domain: "remix.bounce", code: 11, userInfo: [NSLocalizedDescriptionKey: "Offline render returned error"])
+            @unknown default:
+                throw NSError(domain: "remix.bounce", code: 12)
+            }
+        }
+
+        for player in offPlayers { player.stop() }
+        offEngine.stop()
+        offEngine.disableManualRenderingMode()
+
+        _ = channelCount  // silence unused warning; channelCount is implicit in format
+
+        if needsM4ATranscode {
+            // Load the rendered WAV back into a buffer and re-encode as AAC.
+            let wavFile = try AVAudioFile(forReading: renderURL)
+            let frameCapacity = AVAudioFrameCount(wavFile.length)
+            if let buffer = AVAudioPCMBuffer(pcmFormat: wavFile.processingFormat, frameCapacity: frameCapacity) {
+                try wavFile.read(into: buffer)
+                try writeAACM4A(buffer: buffer, to: url)
+            }
+            try? FileManager.default.removeItem(at: renderURL)
+        }
+    }
+
+    /// Returns the automated mixer state at a given playhead time, using the
+    /// same smoothstep blend the live engine applies on playback.
+    private func evaluateMixerState(
+        at time: Double,
+        markers: [Marker],
+        initial: MixerPreset?,
+        fallback: MixerPreset
+    ) -> MixerPreset {
+        let active = markers
+            .filter { $0.time <= time + 0.05 }
+            .max(by: { $0.time < $1.time })
+
+        if let m = active {
+            let duration = Self.markerCrossfadeSeconds
+            let progress = min(1.0, max(0.0, duration > 0 ? (time - m.time) / duration : 1.0))
+            if progress >= 1.0 { return m.state }
+            let prev = markers
+                .filter { $0.time < m.time }
+                .max(by: { $0.time < $1.time })
+            let source = prev?.state ?? initial ?? fallback
+            let eased = progress * progress * (3 - 2 * progress)
+            return MixerPreset.lerp(source, m.state, t: eased)
+        } else if let initial = initial {
+            return initial
+        } else {
+            return fallback
+        }
+    }
+
+    /// Stamps a preset onto the offline graph: player volume/pan, per-stem
+    /// EQ bands + globalGain (combined with normalize + master fader dB),
+    /// master EQ bands.
+    private func applyPresetToOfflineGraph(
+        _ preset: MixerPreset,
+        stemNames: [String],
+        players: [AVAudioPlayerNode],
+        eqs: [AVAudioUnitEQ],
+        masterEQ: AVAudioUnitEQ
+    ) {
+        let hasSolo = preset.soloStates.values.contains(true)
+        let masterFader = preset.masterFaderValue ?? 1.0
+        let masterDB: Float = masterFader > 0 ? 20 * log10f(Float(masterFader)) : -96
+
+        for (i, name) in stemNames.enumerated() {
+            let fader = preset.faderValues[name] ?? 1.0
+            let pan = preset.panValues[name] ?? 0.0
+            let mute = preset.muteStates[name] ?? false
+            let solo = preset.soloStates[name] ?? false
+            let normDB: Float = preset.stemNormalizeGains[name] ?? 0
+
+            let effective: Double = (mute || (hasSolo && !solo)) ? 0 : fader
+            let playerVol = Float(min(effective, 1.0))
+            let boostDB: Float = effective > 1.0 ? 20 * log10f(Float(effective)) : 0
+
+            if i < players.count {
+                players[i].volume = playerVol
+                players[i].pan = Float(pan)
+            }
+            if i < eqs.count {
+                let eq = eqs[i]
+                eq.globalGain = max(-96, min(24, boostDB + normDB + masterDB))
+                if let bands = preset.eqSettings[name] {
+                    for (bi, band) in bands.bands.enumerated() where bi < eq.bands.count {
+                        let nodeBand = eq.bands[bi]
+                        nodeBand.gain = band.gain
+                        nodeBand.bandwidth = band.q
+                        nodeBand.bypass = band.bypass
                     }
                 }
             }
         }
-        
-        // Normalize
-        let maxVal = mixedSamples.map { abs($0) }.max() ?? 1.0
-        if maxVal > 1.0 {
-            for i in 0..<mixedSamples.count {
-                mixedSamples[i] /= maxVal
+
+        // Master EQ band settings. globalGain stays 0 — master fader is
+        // already folded into each stem's EQ globalGain above.
+        if let bands = preset.eqSettings["Master"] {
+            for (bi, band) in bands.bands.enumerated() where bi < masterEQ.bands.count {
+                let nodeBand = masterEQ.bands[bi]
+                nodeBand.gain = band.gain
+                nodeBand.bandwidth = band.q
+                nodeBand.bypass = band.bypass
             }
-        }
-        
-        // Create output buffer
-        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: firstBuffer.format, frameCapacity: AVAudioFrameCount(range.length)) else {
-            handleError("Failed to create output buffer")
-            return
-        }
-        outputBuffer.frameLength = AVAudioFrameCount(range.length)
-        
-        for ch in 0..<channelCount {
-            if let channelData = outputBuffer.floatChannelData?[ch] {
-                for frame in 0..<range.length {
-                    channelData[frame] = mixedSamples[frame * channelCount + ch]
-                }
-            }
-        }
-        
-        // Write to file — branch on extension: WAV (lossless PCM) vs M4A (AAC).
-        do {
-            let ext = url.pathExtension.lowercased()
-            if ext == "m4a" || ext == "aac" {
-                try writeAACM4A(buffer: outputBuffer, to: url)
-            } else {
-                let outputFile = try AVAudioFile(forWriting: url, settings: firstBuffer.format.settings)
-                try outputFile.write(from: outputBuffer)
-            }
-        } catch {
-            handleError("Failed to write file: \(error.localizedDescription)")
         }
     }
 

@@ -151,7 +151,7 @@ struct RemixApp: App {
                         ForEach(presetStore.sortedNames, id: \.self) { name in
                             Button(name) {
                                 if let preset = presetStore.presets[name] {
-                                    audioEngine.applyMixerPreset(preset)
+                                    audioEngine.applyMixerPreset(preset, userInitiated: true)
                                 }
                             }
                             .disabled(!audioEngine.hasSession)

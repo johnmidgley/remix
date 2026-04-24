@@ -83,6 +83,7 @@ if [ "$swift_rebuild" -eq 1 ]; then
         -framework AVFoundation \
         -framework CoreAudio \
         -framework Accelerate \
+        -framework MediaPlayer \
         "${SWIFT_SOURCES[@]}" \
         -o "$BINARY"
     build_rc=$?
