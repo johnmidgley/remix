@@ -819,22 +819,9 @@ struct ToolbarView: View {
                             .font(.system(size: 11))
                             .foregroundColor(Color(hex: "888888"))
                         
-                        Picker("", selection: Binding(
-                            get: { audioEngine.pitch },
-                            set: { audioEngine.setPitch($0) }
-                        )) {
-                            Text("-2").tag(Float(-200))
-                            Text("-1").tag(Float(-100))
-                            Text("0").tag(Float(0))
-                            Text("+1").tag(Float(100))
-                            Text("+2").tag(Float(200))
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 60)
-                        .disabled(!(audioEngine.hasLoadedFile || audioEngine.hasSession))
-                        .accessibilityLabel("Pitch shift")
-                        .accessibilityValue("\(Int(audioEngine.pitch / 100)) semitones")
-                        .help("Shift pitch up or down by semitones")
+                        PitchShiftControl()
+                            .frame(width: 60)
+                            .disabled(!(audioEngine.hasLoadedFile || audioEngine.hasSession))
                     }
                     .opacity((audioEngine.hasLoadedFile || audioEngine.hasSession) ? 1.0 : 0.0)
                     
@@ -3251,3 +3238,168 @@ extension Color {
 //         .environmentObject(AudioEngine())
 //         .frame(width: 1000, height: 600)
 // }
+
+// MARK: - Pitch Shift Control
+
+/// Pitch dropdown with the common presets (−2…+2 semitones). Once clicked it
+/// keeps keyboard focus, and Up/Down arrows step the pitch by one semitone
+/// (up to ±12). Values outside the presets appear as an extra menu item so
+/// the current shift is always displayed.
+struct PitchShiftControl: NSViewRepresentable {
+    @EnvironmentObject var audioEngine: AudioEngine
+
+    static let presets: [Int] = [-2, -1, 0, 1, 2]
+    static let maxSemitones = 12
+
+    func makeNSView(context: Context) -> PitchPopUpButton {
+        let button = PitchPopUpButton(frame: .zero, pullsDown: false)
+        button.controlSize = .regular
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.selectionChanged(_:))
+        button.onStep = { delta in
+            let current = Int((audioEngine.pitch / 100).rounded())
+            let next = max(-Self.maxSemitones, min(Self.maxSemitones, current + delta))
+            audioEngine.setPitch(Float(next) * 100)
+        }
+        button.setAccessibilityLabel("Pitch shift")
+        button.toolTip = "Shift pitch by semitones. Click, then use ↑/↓ to step up to ±12."
+        return button
+    }
+
+    func updateNSView(_ button: PitchPopUpButton, context: Context) {
+        context.coordinator.audioEngine = audioEngine
+        let current = Int((audioEngine.pitch / 100).rounded())
+        var values = Self.presets
+        if !values.contains(current) {
+            values.append(current)
+            values.sort()
+        }
+        let titles = values.map(Self.title)
+        if button.itemTitles != titles {
+            button.removeAllItems()
+            for (value, title) in zip(values, titles) {
+                button.addItem(withTitle: title)
+                button.lastItem?.tag = value
+            }
+        }
+        button.selectItem(withTag: current)
+        button.isEnabled = context.environment.isEnabled
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(audioEngine: audioEngine) }
+
+    static func title(_ semitones: Int) -> String {
+        semitones > 0 ? "+\(semitones)" : "\(semitones)"
+    }
+
+    final class Coordinator: NSObject {
+        var audioEngine: AudioEngine
+        init(audioEngine: AudioEngine) { self.audioEngine = audioEngine }
+
+        @objc func selectionChanged(_ sender: NSPopUpButton) {
+            guard let tag = sender.selectedItem?.tag else { return }
+            audioEngine.setPitch(Float(tag) * 100)
+        }
+    }
+}
+
+final class PitchPopUpButton: NSPopUpButton {
+    var onStep: ((Int) -> Void)?
+
+    override var acceptsFirstResponder: Bool { isEnabled }
+    override var canBecomeKeyView: Bool { isEnabled }
+
+    private var clickMonitor: Any?
+
+    private var didSelectDuringTracking = false
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        didSelectDuringTracking = false
+        // Blocks while the menu is open; the click that dismisses the menu is
+        // consumed by menu tracking, so the click monitor never sees it.
+        super.mouseDown(with: event)
+
+        // Menu dismissed by clicking elsewhere (no item chosen, pointer outside
+        // the button): treat it like any outside click and drop focus.
+        if !didSelectDuringTracking, let window = window {
+            let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            if !bounds.contains(point) {
+                window.makeFirstResponder(window.contentView.flatMap(Self.findKeyEventView))
+            }
+        }
+    }
+
+    override func sendAction(_ action: Selector?, to target: Any?) -> Bool {
+        didSelectDuringTracking = true
+        return super.sendAction(action, to: target)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { installClickMonitor() }
+        return became
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { removeClickMonitor() }
+        return resigned
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { removeClickMonitor() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    /// Clicking anywhere outside the button hands focus back to the app-wide
+    /// key handler. (AppKit doesn't move focus on clicks into non-focusable
+    /// areas, so without this the button would keep focus.) If the click lands
+    /// on another focusable control, that control then takes focus as usual.
+    private func installClickMonitor() {
+        guard clickMonitor == nil else { return }
+        clickMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] event in
+            guard let self = self, let window = self.window,
+                  event.window === window, window.firstResponder === self else { return event }
+            let point = self.convert(event.locationInWindow, from: nil)
+            if !self.bounds.contains(point) {
+                let keyView = window.contentView.flatMap(Self.findKeyEventView)
+                window.makeFirstResponder(keyView)
+            }
+            return event
+        }
+    }
+
+    private func removeClickMonitor() {
+        if let monitor = clickMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickMonitor = nil
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 126: onStep?(1)   // Up arrow
+        case 125: onStep?(-1)  // Down arrow
+        case 123, 124, 53:
+            // Left/Right/Escape belong to the app-wide transport handler.
+            if let keyView = window?.contentView.flatMap(Self.findKeyEventView) {
+                keyView.keyDown(with: event)
+            } else {
+                super.keyDown(with: event)
+            }
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    private static func findKeyEventView(in view: NSView) -> KeyEventNSView? {
+        if let v = view as? KeyEventNSView { return v }
+        for sub in view.subviews {
+            if let found = findKeyEventView(in: sub) { return found }
+        }
+        return nil
+    }
+}

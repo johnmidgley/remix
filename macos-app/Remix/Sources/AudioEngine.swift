@@ -343,7 +343,7 @@ class AudioEngine: ObservableObject {
         }
     }
     @Published var playbackRate: Float = 1.0
-    @Published var pitch: Float = 0.0  // Pitch shift in cents (-200 to +200)
+    @Published var pitch: Float = 0.0  // Pitch shift in cents (-1200 to +1200)
     @Published var masterFaderValue: Double = 1.0  // Master gain applied to stem path only; stored as linear amp (0..~1.995 with +6 dB ceiling)
     @Published var isNormalizingStems: Bool = false
     @Published private(set) var stemsNormalized: Bool = false
@@ -2674,7 +2674,7 @@ class AudioEngine: ObservableObject {
     }
 
     func setPitch(_ cents: Float) {
-        pitch = max(-200, min(200, cents))
+        pitch = max(-1200, min(1200, cents))
         timePitchNode?.pitch = pitch
     }
 
